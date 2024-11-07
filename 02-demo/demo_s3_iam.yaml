@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  This template implements an IAM user 'Messi'
+  An S3 bucket for dog pictues
+  An S3 bucket for other animals
+  And permissions appropriate for Messi.
+Parameters:
+  messipassword:
+    NoEcho: true
+    Description: IAM User Messi's Password
+    Type: String
+Resources:
+  dogpics:
+    Type:  AWS::S3::Bucket
+  animalpics:
+    Type:  AWS::S3::Bucket
+  messi:
+    Type: AWS::IAM::User
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/IAMUserChangePassword
+      LoginProfile:
+        Password: !Ref messipassword
+        PasswordResetRequired: "true"
+  policy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties: 
+      Description: Allow access to all S3 buckets, except dogpics
+      ManagedPolicyName: AllowAllS3ExceptDogs
+      PolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: 's3:*'
+            Resource: '*' 
+          - Effect: Deny
+            Action: 's3:*'
+            Resource: [ !GetAtt dogpics.Arn, !Join ['', [!GetAtt dogpics.Arn, '/*']]]
+Outputs:
+  dogpicsbucketname:
+    Description: Bucketname for dogpictures (the best animal!)
+    Value: !Ref dogpics
+  animalpicsbucketname:
+    Description: Bucketname for animalpics (the almost best animals!)
+    Value: !Ref animalpics
+  sallyusername:
+    Description: IAM Username for Messi
+    Value: !Ref messi
