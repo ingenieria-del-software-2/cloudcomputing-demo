@@ -1,0 +1,74 @@
+services:
+  api: &main_app
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    image: product_catalog:${PRODUCT_CATALOG_VERSION:-latest}
+    restart: always
+    env_file:
+      - .env
+    labels:
+      # Enables traefik for this container.
+      - traefik.enable=true
+      - traefik.http.routers.product_catalog.rule=Host(`${PRODUCT_CATALOG_TRAEFIK_HOST:-product_catalog.localhost}`)
+      - traefik.http.routers.product_catalog.entrypoints=http
+      - traefik.http.routers.product_catalog.service=product_catalog
+      - traefik.http.services.product_catalog.loadbalancer.server.port=${PRODUCT_CATALOG_PORT:-8000}
+    networks:
+      - default
+      - traefik-shared
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PRODUCT_CATALOG_HOST: 0.0.0.0
+      PRODUCT_CATALOG_DB_HOST: product-catalog-db
+      PRODUCT_CATALOG_DB_PORT: 5432
+      PRODUCT_CATALOG_DB_USER: product_catalog
+      PRODUCT_CATALOG_DB_PASS: product_catalog
+      PRODUCT_CATALOG_DB_BASE: product_catalog
+    volumes:
+      - ./src:/app/src
+
+  db:
+    image: postgres:16.3-bullseye
+    hostname: product-catalog-db
+    environment:
+      POSTGRES_PASSWORD: "product_catalog"
+      POSTGRES_USER: "product_catalog"
+      POSTGRES_DB: "product_catalog"
+    volumes:
+      - product-catalog-db-data:/var/lib/postgresql/data
+    restart: always
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: pg_isready -U product_catalog
+      interval: 2s
+      timeout: 3s
+      retries: 40
+
+  migrator:
+    image: product_catalog:${PRODUCT_CATALOG_VERSION:-latest}
+    restart: "no"
+    command: alembic upgrade heads
+    environment:
+      PRODUCT_CATALOG_DB_HOST: product-catalog-db
+      PRODUCT_CATALOG_DB_PORT: 5432
+      PRODUCT_CATALOG_DB_USER: product_catalog
+      PRODUCT_CATALOG_DB_PASS: product_catalog
+      PRODUCT_CATALOG_DB_BASE: product_catalog
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+
+volumes:
+  product-catalog-db-data:
+    name: product-catalog-db-data
+
+networks:
+  # Network for traefik.
+  traefik-shared:
+    name: traefik-shared

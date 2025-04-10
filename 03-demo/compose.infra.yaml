@@ -1,0 +1,66 @@
+services:
+  traefik:
+    image: traefik:v3.3.5
+    container_name: traefik
+    environment:
+      # API & Dashboard
+      - TRAEFIK_API=true
+      - TRAEFIK_API_DASHBOARD=true
+      - TRAEFIK_API_INSECURE=true
+
+      # Docker provider
+      - TRAEFIK_PROVIDERS_DOCKER=true
+      - TRAEFIK_PROVIDERS_DOCKER_EXPOSEDBYDEFAULT=true
+
+      # Entrypoints
+      - TRAEFIK_ENTRYPOINTS_WEB_ADDRESS=:80
+
+      # Logging
+      - TRAEFIK_LOG_LEVEL=INFO
+      - TRAEFIK_ACCESSLOG=true
+      - TRAEFIK_ACCESSLOG_FORMAT=json
+
+      # Tracing (Jaeger)
+      - TRAEFIK_TRACING_OTLP=true
+      - TRAEFIK_TRACING_OTLP_GRPC=true
+      - TRAEFIK_TRACING_OTLP_GRPC_ENDPOINT=jaeger:4317
+      - TRAEFIK_TRACING_OTLP_GRPC_INSECURE=true
+      - TRAEFIK_TRACING_SERVICENAME=traefik
+      - TRAEFIK_TRACING_SAMPLERATE=1.0
+
+    ports:
+      - 80:80
+      - 8080:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - traefik-shared
+    logging:
+      options:
+        max-size: 50m
+
+  # whoami:
+  #   image: traefik/whoami:latest
+  #   container_name: whoami
+  #   labels:
+  #     - traefik.enable=true
+  #     - traefik.http.routers.whoami.rule=Host(`whoami.localhost`)
+  #     - traefik.http.routers.whoami.rule=PathPrefix(`/whoami`)
+  #     - traefik.http.routers.whoami.entrypoints=web
+  #   networks:
+  #     - traefik-shared
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    container_name: jaeger
+    ports:
+      - "16686:16686"     # UI
+      - "6831:6831/udp"   # UDP for agent
+      - "5778:5778"       # Sampling server
+    networks:
+      - traefik-shared
+
+# docker network create traefik-shared
+networks:
+  traefik-shared:
+    external: true
