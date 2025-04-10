@@ -8,27 +8,40 @@ resource "aws_instance" "docker_instance" {
 
   user_data = <<-EOF
     #!/bin/bash
-    # Update packages
     yum update -y
-
-    # Install Docker via official script
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sh get-docker.sh
-
-    # Add ec2-user to docker group
+    amazon-linux-extras install docker -y
+    yum install docker -y
     usermod -aG docker ec2-user
-
-    # Enable and start Docker
     systemctl enable docker
     systemctl start docker
 
+    mkdir -p ~/.docker/cli-plugins
+    curl -SL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 -o /usr/libexec/docker/cli-plugins/docker-compose
+    chmod +x /usr/libexec/docker/cli-plugins/docker-compose
+
     # Create directory for apps and set permissions
     mkdir -p /opt/apps
+    chmod 777 /opt/apps
     chown -R ec2-user:ec2-user /opt/apps
   EOF
 
   tags = {
     Name = "DockerComposeInstance"
+  }
+
+  # Wait for instance to be ready before provisioning
+  provisioner "remote-exec" {
+    inline = [
+      "echo 'Waiting for user data script to complete...'",
+      "sudo cloud-init status --wait"
+    ]
+
+    connection {
+      type        = "ssh"
+      user        = "ec2-user"
+      host        = self.public_ip
+      private_key = file(pathexpand(var.ssh_private_key_path))
+    }
   }
 
   # Copy Docker Compose YAML to EC2 instance
@@ -47,8 +60,11 @@ resource "aws_instance" "docker_instance" {
   # Run Docker Compose
   provisioner "remote-exec" {
     inline = [
+      "echo 'Waiting for Docker to be installed and available...'",
+      "sudo systemctl is-active docker || sudo systemctl start docker",
+      "while ! sudo docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
       "cd /opt/apps",
-      "docker compose up -f compose.infra.yaml -d"
+      "sudo docker compose -f compose.infra.yaml up -d"
     ]
 
     connection {
