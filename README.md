@@ -2,7 +2,7 @@
 
 Este repositorio contiene instrucciones detalladas y recursos utilizados durante la clase práctica de Cloud Computing. Aquí aprenderás desde los primeros pasos básicos hasta prácticas avanzadas con infraestructura como código y pipelines CI/CD usando AWS y GCP.
 
----
+**Diapos**: [Cloud Computing Slides](https://www.figma.com/deck/yJpxpjW6aJOpFBCW7TE1xW/ISW2---Cloud-Computing?node-id=1-660&t=ep8V4cm1Nw0F9j6b-1)
 
 ## 🧱 Paso 0: Configuración Inicial de AWS
 
@@ -140,7 +140,7 @@ Esta demo está completamente automatizada con **Terraform**. En el bloque `user
 - Creación de red compartida `traefik-shared`.
 - Despliegue único de Traefik y Jaeger con Compose.
 
-Cada microservicio se encuentra en su propio repositorio y tiene su propio archivo `docker-compose.yaml` que referencia la variable `<MICROSERVICE_NAME>_VERSION`, la cual es inyectada automáticamente en el deploy desde GitHub Actions.
+Cada microservicio se encuentra en su propio repositorio y tiene su propio archivo `docker-compose.yaml` que referencia la variable `<MICROSERVICE_NAME>_VERSION`, la cual es inyectada automáticamente en el deploy desde GitHub Actions. Ejemplo: (kiosko-fiuba-product-catalog)[https://github.com/ingenieria-del-software-2/kiosko-fiuba-product-catalog/blob/main/docker-compose.yml].
 
 Además, esta demo cuenta con una **versión opcional para GCP**, que replica el mismo pipeline y despliegue utilizando una VM en Google Cloud y `gcloud CLI` en lugar de AWS CLI.
 
