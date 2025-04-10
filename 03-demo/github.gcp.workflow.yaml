@@ -1,0 +1,68 @@
+name: Build, push & deploy to GCP VM
+
+on:
+  push:
+    branches: [main]
+
+env:
+  IMAGE_NAME: microservice_name
+  IMAGE_TAG: ${{ github.sha }}
+  REGION: ${{ secrets.REGION }}
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REPOSITORY: app-repo
+
+jobs:
+  build:
+    name: Build and Push to Artifact Registry
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate with GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Configure Docker to use Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and Push Docker image
+        id: build-image
+        run: |
+          IMAGE_URI=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          docker build -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy to GCP VM
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Upload docker-compose to GCP VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.GCP_VM_HOST }}
+          username: ubuntu
+          key: ${{ secrets.GCP_SSH_KEY }}
+          source: compose.yaml
+          target: /opt/apps/microservice-name
+
+      - name: SSH into GCP VM and deploy
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.GCP_VM_HOST }}
+          username: ubuntu
+          key: ${{ secrets.GCP_SSH_KEY }}
+          script: |
+            cd /opt/apps/microservice-name
+            export MICROSERVICE_NAME_VERSION=${{ needs.build.outputs.image }}
+            docker compose pull
+            docker compose up -d --remove-orphans
