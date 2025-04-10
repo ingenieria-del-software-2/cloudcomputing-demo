@@ -6,8 +6,10 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: product_catalog
+  MICROSERVICE_NAME: product_catalog                    # <--- Cambiá esto para otro microservicio
   IMAGE_TAG: ${{ github.sha }}
+  ECR_URI: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: ${{ env.MICROSERVICE_NAME }}
 
 jobs:
   build:
@@ -29,14 +31,12 @@ jobs:
       - name: Login to Amazon ECR
         id: login-ecr
         run: |
-          aws ecr get-login-password \
-            | docker login --username AWS \
-              --password-stdin ${{ secrets.ECR_REGISTRY }}
+          aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_URI
 
       - name: Build, tag, and push image
         id: build-image
         run: |
-          IMAGE_URI=${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          IMAGE_URI=$ECR_URI/$ECR_REPOSITORY:$IMAGE_TAG
           docker build -t $IMAGE_URI .
           docker push $IMAGE_URI
           echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
@@ -56,7 +56,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           source: compose.yaml
-          target: /opt/apps/microservice-name
+          target: /opt/apps/${{ env.MICROSERVICE_NAME }}
 
       - name: Deploy with SSH
         uses: appleboy/ssh-action@v1
@@ -65,7 +65,7 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd /opt/apps/microservice-name
+            cd /opt/apps/${{ env.MICROSERVICE_NAME }}
             export MICROSERVICE_NAME_VERSION=${{ needs.build.outputs.image }}
             docker compose pull
-          docker compose up -d --remove-orphans
+            docker compose up -d --remove-orphans

@@ -31,3 +31,8 @@ variable "ssh_private_key_path" {
   type        = string
   default     = "~/.ssh/your_key.pem"
 }
+
+variable "microservice_name" {
+  description = "Nombre del microservicio (usado como nombre del repositorio ECR)"
+  type        = string
+}

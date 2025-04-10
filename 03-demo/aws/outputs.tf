@@ -12,3 +12,7 @@ output "public_ip" {
 output "public_dns" {
   value = aws_instance.docker_instance.public_dns
 }
+
+output "ecr_repository_url" {
+  value = aws_ecr_repository.microservice_repo.repository_url
+}

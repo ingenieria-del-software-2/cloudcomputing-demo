@@ -203,27 +203,31 @@ graph TD
   L --> H
 ```
 
-### 🔐 Secrets utilizados en el pipeline (GitHub Actions):
+## 🔐 Secrets utilizados en el pipeline (GitHub Actions)
 
-**AWS**
+### **🔸 AWS**
 
-| Secreto                 | Descripción                                    |
-| ----------------------- | ---------------------------------------------- |
-| `AWS_ACCESS_KEY_ID`     | Access key del usuario IAM                     |
-| `AWS_SECRET_ACCESS_KEY` | Secret key del usuario IAM                     |
-| `ECR_URI`               | URI del repositorio ECR                        |
-| `EC2_HOST`              | Dirección IP o DNS público de la instancia EC2 |
-| `EC2_SSH_KEY`           | Clave privada del Key Pair utilizado por EC2   |
+| Secreto                  | Descripción                                                                  |
+|--------------------------|------------------------------------------------------------------------------|
+| `AWS_ACCESS_KEY_ID`      | Access key del usuario IAM `pipeline-user`                                   |
+| `AWS_SECRET_ACCESS_KEY`  | Secret key del usuario IAM `pipeline-user`                                   |
+| `AWS_ACCOUNT_ID`         | ID de la cuenta AWS (solo números, sin espacios ni guiones)                  |
+| `EC2_HOST`               | Dirección IP o DNS público de la instancia EC2                               |
+| `EC2_SSH_KEY`            | Clave privada del Key Pair utilizado por EC2 (en texto plano, sin passphrase) |
 
-**GCP**
+> 🔁 El `ECR_URI` ahora se construye automáticamente en el pipeline como:  
+> `${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com`
 
-| Secreto                   | Descripción                                                 |
-| ------------------------- | ----------------------------------------------------------- |
-| `GCP_SERVICE_ACCOUNT_KEY` | JSON con credenciales del service account (`pipeline-user`) |
-| `GCP_VM_HOST`             | IP o DNS público de la instancia GCP                        |
-| `GCP_SSH_KEY`             | Clave privada usada para conectar vía SSH                   |
-| `GCP_PROJECT_ID`          | ID del proyecto de GCP                                      |
-| `REGION`                  | Región de GCP para Artifact Registry (ej: `us-central1`)    |
+### **🔹 GCP**
+
+| Secreto                   | Descripción                                                                 |
+|---------------------------|-----------------------------------------------------------------------------|
+| `GCP_SERVICE_ACCOUNT_KEY` | JSON con credenciales del Service Account `pipeline-user`                   |
+| `GCP_VM_HOST`             | Dirección IP o DNS público de la instancia GCP                              |
+| `GCP_SSH_KEY`             | Clave privada utilizada para conectar vía SSH (sin passphrase, en texto plano) |
+| `GCP_PROJECT_ID`          | ID del proyecto de GCP                                                      |
+| `REGION`                  | Región de Artifact Registry en GCP (ejemplo: `us-central1`)                 |
+
 
 ### 🔐 Permisos del Pipeline
 
