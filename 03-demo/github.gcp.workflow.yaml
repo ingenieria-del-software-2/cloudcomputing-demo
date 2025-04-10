@@ -5,11 +5,11 @@ on:
     branches: [main]
 
 env:
-  IMAGE_NAME: microservice_name
+  MICROSERVICE_NAME: shopping-experience                     # <--- Microservicio y nombre del repo
   IMAGE_TAG: ${{ github.sha }}
   REGION: ${{ secrets.REGION }}
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REPOSITORY: app-repo
+  REPOSITORY: shopping-experience                            # <--- Artifact Registry repo con el mismo nombre
 
 jobs:
   build:
@@ -33,7 +33,7 @@ jobs:
       - name: Build and Push Docker image
         id: build-image
         run: |
-          IMAGE_URI=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          IMAGE_URI=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.MICROSERVICE_NAME }}:${{ env.IMAGE_TAG }}
           docker build -t $IMAGE_URI .
           docker push $IMAGE_URI
           echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
@@ -50,19 +50,19 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.GCP_VM_HOST }}
-          username: ubuntu
+          username: debian
           key: ${{ secrets.GCP_SSH_KEY }}
           source: compose.yaml
-          target: /opt/apps/microservice-name
+          target: /opt/apps/${{ env.MICROSERVICE_NAME }}
 
       - name: SSH into GCP VM and deploy
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.GCP_VM_HOST }}
-          username: ubuntu
+          username: debian
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
-            cd /opt/apps/microservice-name
+            cd /opt/apps/${{ env.MICROSERVICE_NAME }}
             export MICROSERVICE_NAME_VERSION=${{ needs.build.outputs.image }}
             docker compose pull
             docker compose up -d --remove-orphans

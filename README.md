@@ -203,31 +203,41 @@ graph TD
   L --> H
 ```
 
+Claro, acá tenés el bloque actualizado del README con la tabla de **secrets utilizados en el pipeline**, incorporando todos los ajustes que hicimos para AWS y GCP, especialmente la variable `MICROSERVICE_NAME`, la generación dinámica de `ECR_URI`, y la forma estándar en que se construye la imagen para **Artifact Registry**.
+
+---
+
 ## 🔐 Secrets utilizados en el pipeline (GitHub Actions)
 
-### **🔸 AWS**
+Estos secretos deben configurarse en la sección **Settings > Secrets and variables > Actions** del repositorio de GitHub.
 
-| Secreto                  | Descripción                                                                  |
-|--------------------------|------------------------------------------------------------------------------|
-| `AWS_ACCESS_KEY_ID`      | Access key del usuario IAM `pipeline-user`                                   |
-| `AWS_SECRET_ACCESS_KEY`  | Secret key del usuario IAM `pipeline-user`                                   |
-| `AWS_ACCOUNT_ID`         | ID de la cuenta AWS (solo números, sin espacios ni guiones)                  |
-| `EC2_HOST`               | Dirección IP o DNS público de la instancia EC2                               |
-| `EC2_SSH_KEY`            | Clave privada del Key Pair utilizado por EC2 (en texto plano, sin passphrase) |
+### 🔸 **AWS**
 
-> 🔁 El `ECR_URI` ahora se construye automáticamente en el pipeline como:  
-> `${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com`
+| Secreto                  | Descripción                                                                 |
+|--------------------------|-----------------------------------------------------------------------------|
+| `AWS_ACCESS_KEY_ID`      | Access key del usuario IAM `pipeline-user`                                  |
+| `AWS_SECRET_ACCESS_KEY`  | Secret key del usuario IAM `pipeline-user`                                  |
+| `AWS_ACCOUNT_ID`         | ID numérico de tu cuenta AWS (sin espacios ni guiones)                      |
+| `EC2_HOST`               | Dirección IP o DNS público de la instancia EC2                              |
+| `EC2_SSH_KEY`            | Clave privada del Key Pair utilizada por EC2 (formato texto plano, sin passphrase) |
 
-### **🔹 GCP**
+> 🧠 El URI del repositorio ECR se construye automáticamente en el pipeline como:  
+> `\${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com`
 
-| Secreto                   | Descripción                                                                 |
-|---------------------------|-----------------------------------------------------------------------------|
-| `GCP_SERVICE_ACCOUNT_KEY` | JSON con credenciales del Service Account `pipeline-user`                   |
-| `GCP_VM_HOST`             | Dirección IP o DNS público de la instancia GCP                              |
-| `GCP_SSH_KEY`             | Clave privada utilizada para conectar vía SSH (sin passphrase, en texto plano) |
-| `GCP_PROJECT_ID`          | ID del proyecto de GCP                                                      |
-| `REGION`                  | Región de Artifact Registry en GCP (ejemplo: `us-central1`)                 |
+---
 
+### 🔹 **GCP**
+
+| Secreto                   | Descripción                                                                   |
+|---------------------------|-------------------------------------------------------------------------------|
+| `GCP_SERVICE_ACCOUNT_KEY` | JSON con credenciales del Service Account `pipeline-user`                     |
+| `GCP_PROJECT_ID`          | ID del proyecto de GCP                                                        |
+| `GCP_VM_HOST`             | Dirección IP o DNS público de la instancia VM de GCP                          |
+| `GCP_SSH_KEY`             | Clave privada para conexión SSH (sin passphrase, en texto plano)              |
+| `REGION`                  | Región de GCP donde se encuentra el Artifact Registry (ejemplo: `us-central1`) |
+
+> 🧠 El URI de la imagen en Artifact Registry se construye así:  
+> `\${{ secrets.REGION }}-docker.pkg.dev/\${{ secrets.GCP_PROJECT_ID }}/<repo>/<microservicio>:<tag>`
 
 ### 🔐 Permisos del Pipeline
 
