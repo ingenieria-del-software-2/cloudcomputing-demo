@@ -25,6 +25,7 @@ variable "ssh_key_name" {
 # Provider
 provider "aws" {
   region = var.region
+  profile = "iamadmin-general"
 }
 
 # Data Source for AMI from SSM Parameter Store
