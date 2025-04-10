@@ -91,7 +91,7 @@ terraform apply -var="ssh_key_name=tu_ssh_key_name"
 terraform destroy -var="ssh_key_name=tu_ssh_key_name"
 ```
 
-📁 **Assets:** disponibles en carpeta `01-demo`.
+📁 **Assets:** disponibles en carpeta [**01-demo**](https://github.com/ingenieria-del-software-2/cloudcomputing-demo/tree/main/01-demo)
 
 ---
 
@@ -128,7 +128,7 @@ La plantilla crea:
 - Desasocia política IAM del usuario Messi.
 - Destruye stack CloudFormation.
 
-📁 **Assets:** disponibles en carpeta `02-demo`.
+📁 **Assets:** disponibles en carpeta [**2-demo**](https://github.com/ingenieria-del-software-2/cloudcomputing-demo/tree/main/01-demo)
 
 ---
 
@@ -144,7 +144,7 @@ Cada microservicio se encuentra en su propio repositorio y tiene su propio archi
 
 Además, esta demo cuenta con una **versión opcional para GCP**, que replica el mismo pipeline y despliegue utilizando una VM en Google Cloud y `gcloud CLI` en lugar de AWS CLI.
 
-📁 Los assets para esta demo están en la carpeta `03-demo`.
+📁 Los assets para esta demo están en la carpeta [**03-demo**](https://github.com/ingenieria-del-software-2/cloudcomputing-demo/tree/main/03-demo)
 
 ### Diagrama de arquitectura de los servicios (Traefik y Microservicios)
 
@@ -266,8 +266,6 @@ gcloud iam service-accounts keys create ./pipeline_credentials.json \
 ```
 
 La infraestructura de GCP (VM, red, permisos) está escrita en Terraform, excepto la generación del archivo `pipeline_credentials.json`, que debe subirse como secreto a GitHub Actions (`GCP_SERVICE_ACCOUNT_KEY`).
-
-📁 **Assets:** disponibles en carpeta `03-demo`.
 
 ---
 
