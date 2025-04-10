@@ -140,7 +140,7 @@ Esta demo está completamente automatizada con **Terraform**. En el bloque `user
 - Creación de red compartida `traefik-shared`.
 - Despliegue único de Traefik y Jaeger con Compose.
 
-Cada microservicio se encuentra en su propio repositorio y tiene su propio archivo `docker-compose.yaml` que referencia la variable `<MICROSERVICE_NAME>_VERSION`, la cual es inyectada automáticamente en el deploy desde GitHub Actions. Ejemplo: (kiosko-fiuba-product-catalog)[https://github.com/ingenieria-del-software-2/kiosko-fiuba-product-catalog/blob/main/docker-compose.yml].
+Cada microservicio se encuentra en su propio repositorio y tiene su propio archivo `docker-compose.yaml` que referencia la variable `<MICROSERVICE_NAME>_VERSION`, la cual es inyectada automáticamente en el deploy desde GitHub Actions. Ejemplos: [kiosko-fiuba-product-catalog](https://github.com/ingenieria-del-software-2/kiosko-fiuba-product-catalog/blob/main/docker-compose.yml) y [kiosko-fiuba-shopping-experience](https://github.com/ingenieria-del-software-2/kiosko-fiuba-shopping-experience/blob/main/docker-compose.yml)
 
 Además, esta demo cuenta con una **versión opcional para GCP**, que replica el mismo pipeline y despliegue utilizando una VM en Google Cloud y `gcloud CLI` en lugar de AWS CLI.
 
