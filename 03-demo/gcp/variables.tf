@@ -32,3 +32,8 @@ variable "ssh_private_key_path" {
   type        = string
   default     = "~/.ssh/tu_clave_gcp"
 }
+
+variable "microservice_name" {
+  description = "Nombre del microservicio (y del repo en Artifact Registry)"
+  type        = string
+}

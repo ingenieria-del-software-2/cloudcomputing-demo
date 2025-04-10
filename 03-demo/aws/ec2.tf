@@ -66,8 +66,6 @@ resource "aws_instance" "docker_instance" {
       "cd /opt/apps",
       "echo 'Ensuring traefik-shared network exists...'",
       "sudo docker network inspect traefik-shared >/dev/null 2>&1 || sudo docker network create traefik-shared",
-      "echo 'Sleeping for 30 seconds to ensure everything is ready...'",
-      "sleep 30",
       "sudo docker compose -f compose.infra.yaml up -d"
     ]
 

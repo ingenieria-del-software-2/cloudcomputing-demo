@@ -35,12 +35,26 @@ resource "google_compute_instance" "pipeline_vm" {
 
     # Create directory for Docker Compose apps and set permissions
     mkdir -p /opt/apps
+    chmod 777 /opt/apps
     chown -R debian:debian /opt/apps
   EOF
 
   tags = ["pipeline"]
 
-  # Copiar archivo Docker Compose a la VM
+  # Wait for instance to be ready before provisioning
+  provisioner "remote-exec" {
+    inline = [
+      "echo 'Waiting for startup script to complete...'",
+      "while [ ! -f /var/lib/cloud/instance/boot-finished ]; do sleep 5; echo 'Waiting for startup to finish...'; done"
+    ]
+
+    connection {
+      type        = "ssh"
+      user        = "debian"
+      host        = self.network_interface[0].access_config[0].nat_ip
+      private_key = file(pathexpand(var.ssh_private_key_path))
+    }
+  }
   provisioner "file" {
     source      = "../compose.infra.yaml"
     destination = "/opt/apps/compose.infra.yaml"
@@ -56,8 +70,13 @@ resource "google_compute_instance" "pipeline_vm" {
   # Ejecutar Docker Compose automáticamente
   provisioner "remote-exec" {
     inline = [
+      "echo 'Waiting for Docker to be installed and available...'",
+      "sudo systemctl is-active docker || sudo systemctl start docker",
+      "while ! sudo docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
+      "echo 'Ensuring traefik-shared network exists...'",
+      "sudo docker network inspect traefik-shared >/dev/null 2>&1 || sudo docker network create traefik-shared",
       "cd /opt/apps",
-      "docker compose up -f compose.infra.yaml -d"
+      "sudo docker compose -f compose.infra.yaml up -d"
     ]
 
     connection {
