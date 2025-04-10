@@ -95,16 +95,20 @@ resource "aws_instance" "ec2_instance" {
 
   user_data = <<-EOF
     #!/bin/bash
-    sudo yum update -y
-    sudo amazon-linux-extras install nginx1 -y
-    sudo systemctl start nginx
-    sudo systemctl enable nginx
+    yum update -y 
+    yum install -y nginx
+
+    cat > /usr/share/nginx/html/index.html <<'EOF_HTML'
+    ${templatefile("${path.module}/index.html", {})}
+    EOF_HTML
+
+    systemctl enable --now nginx
   EOF
 
-  tags = {
-    Name = "MyEC2Instance"
+    tags = {
+      Name = "MyEC2Instance"
+    }
   }
-}
 
 # Outputs
 output "instance_id" {
