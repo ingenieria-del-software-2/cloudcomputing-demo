@@ -43,6 +43,6 @@ Outputs:
   animalpicsbucketname:
     Description: Bucketname for animalpics (the almost best animals!)
     Value: !Ref animalpics
-  sallyusername:
+  messiusername:
     Description: IAM Username for Messi
     Value: !Ref messi
