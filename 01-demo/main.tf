@@ -103,6 +103,7 @@ resource "aws_instance" "ec2_instance" {
     EOF_HTML
 
     systemctl enable --now nginx
+    systemctl start nginx
   EOF
 
     tags = {
