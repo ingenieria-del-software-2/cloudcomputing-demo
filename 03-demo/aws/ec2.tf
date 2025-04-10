@@ -64,6 +64,10 @@ resource "aws_instance" "docker_instance" {
       "sudo systemctl is-active docker || sudo systemctl start docker",
       "while ! sudo docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
       "cd /opt/apps",
+      "echo 'Ensuring traefik-shared network exists...'",
+      "sudo docker network inspect traefik-shared >/dev/null 2>&1 || sudo docker network create traefik-shared",
+      "echo 'Sleeping for 30 seconds to ensure everything is ready...'",
+      "sleep 30",
       "sudo docker compose -f compose.infra.yaml up -d"
     ]
 
