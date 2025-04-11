@@ -11,6 +11,7 @@ services:
       # Enables traefik for this container.
       - traefik.enable=true
       - traefik.http.routers.product_catalog.rule=Host(`${PRODUCT_CATALOG_TRAEFIK_HOST:-product_catalog.localhost}`)
+      - traefik.http.routers.product_catalog.rule=PathPrefix(`/product-catalog`)
       - traefik.http.routers.product_catalog.entrypoints=http
       - traefik.http.routers.product_catalog.service=product_catalog
       - traefik.http.services.product_catalog.loadbalancer.server.port=${PRODUCT_CATALOG_PORT:-8000}
