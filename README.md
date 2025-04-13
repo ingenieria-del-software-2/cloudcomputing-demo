@@ -258,26 +258,34 @@ Estos valores generados deben guardarse como secretos en GitHub Actions (`AWS_AC
 
 #### GCP - Service Account para Artifact Registry
 
+La cuenta de servicio para el pipeline y la generación de su clave JSON se crean automáticamente mediante Terraform. El archivo `iam.tf` ya contiene el código para generar y exponer la clave como output. Para obtener y configurar la clave, sigue estos pasos:
+
+1. **Aplica la configuración de Terraform y obtén la clave**:
+
 ```bash
-# Crear Service Account
-gcloud iam service-accounts create pipeline-user --display-name "Pipeline User"
-
-# Obtener el ID del proyecto
-PROJECT_ID=$(gcloud config get-value project)
-
-# Asignar el rol de escritor en Artifact Registry
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:pipeline-user@$PROJECT_ID.iam.gserviceaccount.com" \
-  --role="roles/artifactregistry.writer"
-
-# (Manual) Crear una key JSON (guárdala en GitHub Secrets)
-gcloud iam service-accounts keys create ./pipeline_credentials.json \
-  --iam-account=pipeline-user@$PROJECT_ID.iam.gserviceaccount.com
+terraform apply
+# Extrae la clave JSON (codificada en base64)
+terraform output -raw pipeline_service_account_key | base64 --decode > pipeline_credentials.json
 ```
 
-La infraestructura de GCP (VM, red, permisos) está escrita en Terraform, excepto la generación del archivo `pipeline_credentials.json`, que debe subirse como secreto a GitHub Actions (`GCP_SERVICE_ACCOUNT_KEY`).
+2. **Guarda la clave como secreto en GitHub Actions** con el nombre `GCP_SERVICE_ACCOUNT_KEY`:
+   - Ve a tu repositorio GitHub → Settings → Secrets and variables → Actions
+   - Crea un nuevo secreto con el contenido del archivo `pipeline_credentials.json`
 
----
+3. **Por seguridad, elimina el archivo de credenciales** una vez configurado el secreto:
+
+```bash
+rm pipeline_credentials.json
+```
+
+Esta clave permite que GitHub Actions se autentique con GCP y publique imágenes en Artifact Registry. El flujo de trabajo utilizará esta clave para autenticarse mediante el comando:
+
+```yaml
+- name: Auth to Google Cloud
+  uses: google-github-actions/auth@v1
+  with:
+    credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+```
 
 ## 🧹 Limpieza Final  
 

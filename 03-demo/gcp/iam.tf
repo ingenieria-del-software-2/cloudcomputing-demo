@@ -24,14 +24,14 @@ resource "google_project_iam_member" "artifact_registry_reader" {
   member  = "serviceAccount:${google_service_account.pipeline_vm_sa.email}"
 }
 
-# # (Opcional) Generar key JSON para la Service Account
-# resource "google_service_account_key" "pipeline_user_key" {
-#   service_account_id = google_service_account.pipeline_user.name
-# }
+# Generar key JSON para la Service Account
+resource "google_service_account_key" "pipeline_user_key" {
+  service_account_id = google_service_account.pipeline_user.name
+}
 
-# # Output con el contenido del JSON (sensible, guarda esto en GitHub Secrets inmediatamente)
-# output "pipeline_service_account_key" {
-#   value       = google_service_account_key.pipeline_user_key.private_key
-#   sensitive   = true
-#   description = "JSON key para pipeline-user service account"
-# }
+# Output con el contenido del JSON (sensible, guarda esto en GitHub Secrets inmediatamente)
+output "pipeline_service_account_key" {
+  value       = google_service_account_key.pipeline_user_key.private_key
+  sensitive   = true
+  description = "JSON key para pipeline-user service account"
+}
