@@ -21,4 +21,10 @@ output "repository_url" {
 # Output: Internal IP
 output "internal_ip" {
   value = google_compute_instance.pipeline_vm.network_interface[0].network_ip
+}
+
+# Output: Username detectado automáticamente
+output "gcp_username" {
+  value = local.username
+  description = "Nombre de usuario automáticamente detectado del email de Google"
 } 

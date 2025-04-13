@@ -1,5 +1,13 @@
 # vm.tf
 
+# Obtener información del usuario autenticado
+data "google_client_openid_userinfo" "me" {}
+
+# Función local para extraer el nombre de usuario base del email
+locals {
+  username = split("@", data.google_client_openid_userinfo.me.email)[0]
+}
+
 # Recurso VM equivalente al setup de AWS EC2 con Docker Compose
 resource "google_compute_instance" "pipeline_vm" {
   name         = var.vm_name
@@ -23,10 +31,10 @@ resource "google_compute_instance" "pipeline_vm" {
     scopes = ["cloud-platform"]
   }
 
-  # Disable OS Login to ensure we use the standard debian user
+  # Configurar acceso SSH con el usuario detectado automáticamente
   metadata = {
     enable-oslogin = "FALSE"
-    ssh-keys       = "debian:${file(pathexpand(var.ssh_public_key_path))}"
+    ssh-keys       = "${local.username}:${file(pathexpand(var.ssh_public_key_path))}"
   }
 
   metadata_startup_script = <<-EOF
@@ -37,7 +45,7 @@ resource "google_compute_instance" "pipeline_vm" {
     # Create directory for Docker Compose apps and set permissions first
     mkdir -p /opt/apps
     chmod 777 /opt/apps
-    chown -R debian:debian /opt/apps
+    chown -R ${local.username}:${local.username} /opt/apps
 
     # Install necessary tools
     apt install -y apt-transport-https ca-certificates gnupg curl
@@ -51,17 +59,17 @@ resource "google_compute_instance" "pipeline_vm" {
     curl -fsSL https://get.docker.com -o get-docker.sh
     sh get-docker.sh
 
-    # Add 'debian' user to docker group
-    usermod -aG docker debian
+    # Add user to docker group
+    usermod -aG docker ${local.username}
 
     # Enable and start Docker
     systemctl enable docker
     systemctl start docker
     
     # Configure Docker credential helper for permanent authentication
-    mkdir -p /home/debian/.docker
-    echo '{"credHelpers": {"${var.region}-docker.pkg.dev": "gcloud"}}' > /home/debian/.docker/config.json
-    chown -R debian:debian /home/debian/.docker
+    mkdir -p /home/${local.username}/.docker
+    echo '{"credHelpers": {"${var.region}-docker.pkg.dev": "gcloud"}}' > /home/${local.username}/.docker/config.json
+    chown -R ${local.username}:${local.username} /home/${local.username}/.docker
   EOF
 
   tags = ["pipeline"]
@@ -69,11 +77,11 @@ resource "google_compute_instance" "pipeline_vm" {
 
   provisioner "file" {
     source      = "../compose.infra.yaml"
-    destination = "/opt/apps/compose.infra.yaml"
+    destination = "/home/${local.username}/compose.infra.yaml"
 
     connection {
       type        = "ssh"
-      user        = "debian"
+      user        = local.username
       host        = self.network_interface[0].access_config[0].nat_ip
       private_key = file(pathexpand(var.ssh_private_key_path))
     }
@@ -85,6 +93,9 @@ resource "google_compute_instance" "pipeline_vm" {
       "echo 'Waiting for Docker to be installed and available...'",
       "sudo systemctl is-active docker || sudo systemctl start docker",
       "while ! docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
+      "sudo mkdir -p /opt/apps",
+      "sudo cp /home/${local.username}/compose.infra.yaml /opt/apps/compose.infra.yaml",
+      "sudo chmod 644 /opt/apps/compose.infra.yaml",
       "cd /opt/apps",
       "echo 'Ensuring traefik-shared network exists...'",
       "docker network inspect traefik-shared >/dev/null 2>&1 || docker network create traefik-shared",
@@ -93,7 +104,7 @@ resource "google_compute_instance" "pipeline_vm" {
 
     connection {
       type        = "ssh"
-      user        = "debian"
+      user        = local.username
       host        = self.network_interface[0].access_config[0].nat_ip
       private_key = file(pathexpand(var.ssh_private_key_path))
     }
