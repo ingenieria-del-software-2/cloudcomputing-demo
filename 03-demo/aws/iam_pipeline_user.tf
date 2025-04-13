@@ -9,19 +9,19 @@ resource "aws_iam_user_policy_attachment" "pipeline_user_ecr_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
 }
 
-# # (Opcional) Crear access key para el usuario pipeline (para GitHub Actions)
-# resource "aws_iam_access_key" "pipeline_user_key" {
-#   user = aws_iam_user.pipeline_user.name
-# }
+# Crear access key para el usuario pipeline (para GitHub Actions)
+resource "aws_iam_access_key" "pipeline_user_key" {
+  user = aws_iam_user.pipeline_user.name
+}
 
-# # Mostrar las credenciales del access key generadas (¡Manejar con precaución!)
-# output "pipeline_user_access_key_id" {
-#   value       = aws_iam_access_key.pipeline_user_key.id
-#   description = "Access Key ID para el usuario pipeline-user"
-# }
+# Mostrar las credenciales del access key generadas (¡Manejar con precaución!)
+output "pipeline_user_access_key_id" {
+  value       = aws_iam_access_key.pipeline_user_key.id
+  description = "Access Key ID para el usuario pipeline-user"
+}
 
-# output "pipeline_user_secret_access_key" {
-#   value       = aws_iam_access_key.pipeline_user_key.secret
-#   sensitive   = true
-#   description = "Secret Access Key para el usuario pipeline-user"
-# }
+output "pipeline_user_secret_access_key" {
+  value       = aws_iam_access_key.pipeline_user_key.secret
+  sensitive = true
+  description = "Secret Access Key para el usuario pipeline-user"
+}
