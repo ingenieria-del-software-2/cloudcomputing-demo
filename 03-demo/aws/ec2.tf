@@ -5,6 +5,7 @@ resource "aws_instance" "docker_instance" {
   key_name               = var.ssh_key_name
   iam_instance_profile   = aws_iam_instance_profile.ec2_instance_profile.name
   security_groups        = [aws_security_group.ec2_sg.name]
+  depends_on = [ aws_ecr_repository.microservice_repo ]
 
   user_data = <<-EOF
     #!/bin/bash
@@ -62,11 +63,13 @@ resource "aws_instance" "docker_instance" {
     inline = [
       "echo 'Waiting for Docker to be installed and available...'",
       "sudo systemctl is-active docker || sudo systemctl start docker",
-      "while ! sudo docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
+      "while ! docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
       "cd /opt/apps",
+      "echo 'Logging into ECR repository as ec2-user...'",
+      "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${aws_ecr_repository.microservice_repo.repository_url}",
       "echo 'Ensuring traefik-shared network exists...'",
-      "sudo docker network inspect traefik-shared >/dev/null 2>&1 || sudo docker network create traefik-shared",
-      "sudo docker compose -f compose.infra.yaml up -d"
+      "docker network inspect traefik-shared >/dev/null 2>&1 || docker network create traefik-shared",
+      "docker compose -f compose.infra.yaml up -d"
     ]
 
     connection {
