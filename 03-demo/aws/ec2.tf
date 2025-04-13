@@ -27,7 +27,7 @@ resource "aws_instance" "docker_instance" {
   EOF
 
   tags = {
-    Name = "DockerComposeInstance"
+    Name = var.vm_instance_name
   }
 
   # Wait for instance to be ready before provisioning

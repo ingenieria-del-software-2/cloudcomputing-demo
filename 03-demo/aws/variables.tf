@@ -36,3 +36,9 @@ variable "microservice_name" {
   description = "Nombre del microservicio (usado como nombre del repositorio ECR)"
   type        = string
 }
+
+variable "vm_instance_name" {
+  description = "Name of the EC2 instance for Docker"
+  type        = string
+  default     = "DockerComposeInstance"
+}
