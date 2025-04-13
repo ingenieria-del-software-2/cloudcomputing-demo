@@ -13,6 +13,80 @@ Este directorio contiene la configuración Terraform para Google Cloud Platform 
 2. [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) instalado y configurado
 3. [Terraform](https://developer.hashicorp.com/terraform/downloads) instalado
 
+Esto permite que Docker en la VM pueda extraer imágenes del repositorio sin tokens manuales.
+
+## Cambio entre cuentas de Google Cloud
+
+Si necesitas cambiar de una cuenta de Google Cloud (por ejemplo, de una cuenta laboral a una personal), sigue estos pasos:
+
+### Verificar la cuenta actual
+
+Para ver qué cuenta está actualmente configurada:
+
+```bash
+gcloud auth list
+```
+
+Esto mostrará todas las cuentas autenticadas, con un asterisco (*) junto a la cuenta activa.
+
+### Cambiar a otra cuenta
+
+1. **Autenticarse con la nueva cuenta**:
+
+   ```bash
+   gcloud auth login
+   ```
+
+   Se abrirá una ventana del navegador para que inicies sesión con la cuenta deseada.
+
+2. **Establecer la cuenta como activa**:
+
+   ```bash
+   gcloud config set account [TU_CORREO@gmail.com]
+   ```
+
+   Reemplaza `[TU_CORREO@gmail.com]` con tu dirección de correo electrónico.
+
+3. **Listar los proyectos disponibles**:
+
+   ```bash
+   gcloud projects list
+   ```
+
+4. **Configurar el proyecto activo**:
+
+   ```bash
+   gcloud config set project [ID_DEL_PROYECTO]
+   ```
+
+   Reemplaza `[ID_DEL_PROYECTO]` con el ID del proyecto que deseas usar.
+
+5. **Actualizar las credenciales de aplicación predeterminadas**:
+
+   ```bash
+   gcloud auth application-default login
+   ```
+
+   Esto configura las credenciales que usarán las bibliotecas de cliente de Google Cloud.
+
+6. **Verificar la configuración completa**:
+
+   ```bash
+   gcloud config list
+   ```
+
+   Esto mostrará tu cuenta activa, proyecto y otras configuraciones.
+
+7. **Actualizar el archivo terraform.tfvars**:
+
+   Modifica la línea `project_id` en tu archivo `terraform.tfvars` para que coincida con tu nuevo proyecto:
+
+   ```
+   project_id = "tu-nuevo-proyecto-id"
+   ```
+
+Después de completar estos pasos, podrás desplegar recursos en GCP usando tu cuenta personal y el proyecto seleccionado.
+
 ## Configuración de SSH para GCP (diferente a AWS)
 
 **IMPORTANTE**: A diferencia de AWS, GCP no tiene un gestor de pares de claves integrado. Debes generar y configurar tus propias claves SSH.
@@ -72,5 +146,3 @@ La VM está configurada para autenticarse automáticamente con Artifact Registry
 
 1. La cuenta de servicio de la VM con permisos de lectura
 2. El helper de credenciales de Docker configurado para GCP
-
-Esto permite que Docker en la VM pueda extraer imágenes del repositorio sin tokens manuales. 
