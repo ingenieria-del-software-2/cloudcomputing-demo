@@ -234,7 +234,6 @@ Estos secretos deben configurarse en la sección **Settings > Secrets and variab
 | `GCP_PROJECT_ID`          | ID del proyecto de GCP                                                        |
 | `GCP_VM_HOST`             | Dirección IP o DNS público de la instancia VM de GCP                          |
 | `GCP_SSH_KEY`             | Clave privada para conexión SSH (sin passphrase, en texto plano)              |
-| `REGION`                  | Región de GCP donde se encuentra el Artifact Registry (ejemplo: `us-central1`) |
 
 > 🧠 El URI de la imagen en Artifact Registry se construye así:  
 > `\${{ secrets.REGION }}-docker.pkg.dev/\${{ secrets.GCP_PROJECT_ID }}/<repo>/<microservicio>:<tag>`

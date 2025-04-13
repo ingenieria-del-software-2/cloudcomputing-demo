@@ -17,10 +17,24 @@ resource "google_compute_instance" "pipeline_vm" {
     access_config {}
   }
 
+  # Attach service account with proper permissions
+  service_account {
+    email  = google_service_account.pipeline_vm_sa.email
+    scopes = ["cloud-platform"]
+  }
+
   metadata_startup_script = <<-EOF
     #!/bin/bash
     # Update packages
     apt update -y
+
+    # Install necessary tools
+    apt install -y apt-transport-https ca-certificates gnupg curl
+
+    # Install gcloud CLI
+    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg add -
+    apt update -y && apt install -y google-cloud-cli
 
     # Install Docker via official Docker script
     curl -fsSL https://get.docker.com -o get-docker.sh
@@ -37,6 +51,11 @@ resource "google_compute_instance" "pipeline_vm" {
     mkdir -p /opt/apps
     chmod 777 /opt/apps
     chown -R debian:debian /opt/apps
+    
+    # Configure Docker credential helper for permanent authentication
+    mkdir -p /home/debian/.docker
+    echo '{"credHelpers": {"${var.region}-docker.pkg.dev": "gcloud"}}' > /home/debian/.docker/config.json
+    chown -R debian:debian /home/debian/.docker
   EOF
 
   tags = ["pipeline"]
@@ -72,11 +91,11 @@ resource "google_compute_instance" "pipeline_vm" {
     inline = [
       "echo 'Waiting for Docker to be installed and available...'",
       "sudo systemctl is-active docker || sudo systemctl start docker",
-      "while ! sudo docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
-      "echo 'Ensuring traefik-shared network exists...'",
-      "sudo docker network inspect traefik-shared >/dev/null 2>&1 || sudo docker network create traefik-shared",
+      "while ! docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
       "cd /opt/apps",
-      "sudo docker compose -f compose.infra.yaml up -d"
+      "echo 'Ensuring traefik-shared network exists...'",
+      "docker network inspect traefik-shared >/dev/null 2>&1 || docker network create traefik-shared",
+      "docker compose -f compose.infra.yaml up -d"
     ]
 
     connection {
