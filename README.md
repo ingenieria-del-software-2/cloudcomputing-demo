@@ -203,11 +203,9 @@ graph TD
   L --> H
 ```
 
-Claro, acá tenés el bloque actualizado del README con la tabla de **secrets utilizados en el pipeline**, incorporando todos los ajustes que hicimos para AWS y GCP, especialmente la variable `MICROSERVICE_NAME`, la generación dinámica de `ECR_URI`, y la forma estándar en que se construye la imagen para **Artifact Registry**.
-
 ---
 
-## 🔐 Secrets utilizados en el pipeline (GitHub Actions)
+## 🔑 Secrets utilizados en el pipeline (GitHub Actions)
 
 Estos secretos deben configurarse en la sección **Settings > Secrets and variables > Actions** del repositorio de GitHub.
 
@@ -224,8 +222,6 @@ Estos secretos deben configurarse en la sección **Settings > Secrets and variab
 > 🧠 El URI del repositorio ECR se construye automáticamente en el pipeline como:  
 > `\${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com`
 
----
-
 ### 🔹 **GCP**
 
 | Secreto                   | Descripción                                                                   |
@@ -238,53 +234,66 @@ Estos secretos deben configurarse en la sección **Settings > Secrets and variab
 > 🧠 El URI de la imagen en Artifact Registry se construye así:  
 > `\${{ secrets.REGION }}-docker.pkg.dev/\${{ secrets.GCP_PROJECT_ID }}/<repo>/<microservicio>:<tag>`
 
-### 🔐 Permisos del Pipeline
+## 🔐 Permisos del Pipeline
 
-Tanto en AWS como en GCP, se automatiza la creación de los permisos necesarios usando **Terraform**, con excepción de las credenciales secretas necesarias para CI/CD (las access keys en AWS y las keys de service account en GCP), que **deben generarse manualmente**.
+Tanto en AWS como en GCP, Terraform automatiza la creación de los roles, permisos y cuentas necesarios para el pipeline CI/CD. Sin embargo, las credenciales secretas (access keys y service account keys) deben obtenerse después del despliegue para configurarlas en GitHub Actions.
 
 #### AWS - IAM User para ECR
 
-El usuario para el pipeline se crea automáticamente mediante Terraform, junto con sus permisos y credenciales de acceso:
+Terraform crea el usuario IAM `pipeline-user` con permisos para publicar imágenes en ECR. Para obtener sus credenciales:
 
 ```bash
-# Obtén el ID de acceso (Access Key) del output de Terraform
-terraform output -raw pipeline_user_access_key_id
+# ⚠️ Primero, edita el archivo terraform.tfvars para configurar tus variables (ssh_key_name, etc.)
 
-# Obtén la clave secreta (Secret Access Key) del output de Terraform
+# Aplica la configuración Terraform si no lo has hecho
+terraform apply
+
+# Obtén las credenciales (generadas automáticamente)
+terraform output -raw pipeline_user_access_key_id
 terraform output -raw pipeline_user_secret_access_key
 ```
 
-Estos valores generados deben guardarse como secretos en GitHub Actions (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). Al usar el comando `terraform output -raw`, obtienes directamente el valor sin formato adicional, lo que facilita su uso en scripts o como variables de entorno.
+**Configuración en GitHub Actions**:
+Usa las credenciales obtenidas para configurar los secretos en GitHub Actions según la tabla de AWS mostrada anteriormente.
+
+**Uso en workflow**:
+```yaml
+- name: Configure AWS credentials
+  uses: aws-actions/configure-aws-credentials@v1
+  with:
+    aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+    aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    aws-region: us-east-1
+```
 
 #### GCP - Service Account para Artifact Registry
 
-La cuenta de servicio para el pipeline y la generación de su clave JSON se crean automáticamente mediante Terraform. El archivo `iam.tf` ya contiene el código para generar y exponer la clave como output. Para obtener y configurar la clave, sigue estos pasos:
-
-1. **Aplica la configuración de Terraform y obtén la clave**:
+Terraform crea la cuenta de servicio `pipeline-user` con permisos para publicar en Artifact Registry. Para obtener su clave:
 
 ```bash
+# ⚠️ Primero, edita el archivo terraform.tfvars para configurar tus variables (project_id, etc.)
+
+# Aplica la configuración Terraform si no lo has hecho
 terraform apply
+
 # Extrae la clave JSON (codificada en base64)
 terraform output -raw pipeline_service_account_key | base64 --decode > pipeline_credentials.json
 ```
 
-2. **Guarda la clave como secreto en GitHub Actions** con el nombre `GCP_SERVICE_ACCOUNT_KEY`:
-   - Ve a tu repositorio GitHub → Settings → Secrets and variables → Actions
-   - Crea un nuevo secreto con el contenido del archivo `pipeline_credentials.json`
+**Configuración en GitHub Actions**:
+Usa el archivo `pipeline_credentials.json` generado para configurar los secretos en GitHub Actions según la tabla de GCP mostrada anteriormente.
 
-3. **Por seguridad, elimina el archivo de credenciales** una vez configurado el secreto:
-
-```bash
-rm pipeline_credentials.json
-```
-
-Esta clave permite que GitHub Actions se autentique con GCP y publique imágenes en Artifact Registry. El flujo de trabajo utilizará esta clave para autenticarse mediante el comando:
-
+**Uso en workflow**:
 ```yaml
 - name: Auth to Google Cloud
   uses: google-github-actions/auth@v1
   with:
     credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+```
+
+**Limpieza de seguridad**: Después de configurar los secretos, elimina las credenciales locales:
+```bash
+rm pipeline_credentials.json  # Para GCP
 ```
 
 ## 🧹 Limpieza Final  
