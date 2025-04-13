@@ -65,20 +65,7 @@ resource "google_compute_instance" "pipeline_vm" {
 
   tags = ["pipeline"]
 
-  # Wait for instance to be ready before provisioning
-  provisioner "remote-exec" {
-    inline = [
-      "echo 'Waiting for startup script to complete...'",
-      "while [ ! -f /var/lib/cloud/instance/boot-finished ]; do sleep 5; echo 'Waiting for startup to finish...'; done"
-    ]
 
-    connection {
-      type        = "ssh"
-      user        = "debian"
-      host        = self.network_interface[0].access_config[0].nat_ip
-      private_key = file(pathexpand(var.ssh_private_key_path))
-    }
-  }
   provisioner "file" {
     source      = "../compose.infra.yaml"
     destination = "/opt/apps/compose.infra.yaml"
