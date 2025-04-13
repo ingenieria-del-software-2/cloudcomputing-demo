@@ -17,21 +17,27 @@ resource "google_compute_instance" "pipeline_vm" {
     access_config {}
   }
 
-  # Add SSH key to VM instance
-  metadata = {
-    ssh-keys = "debian:${file("${pathexpand(var.ssh_public_key_path)}")}"
-  }
-
   # Attach service account with proper permissions
   service_account {
     email  = google_service_account.pipeline_vm_sa.email
     scopes = ["cloud-platform"]
   }
 
+  # Disable OS Login to ensure we use the standard debian user
+  metadata = {
+    enable-oslogin = "FALSE"
+    ssh-keys       = "debian:${file(pathexpand(var.ssh_public_key_path))}"
+  }
+
   metadata_startup_script = <<-EOF
     #!/bin/bash
     # Update packages
     apt update -y
+
+    # Create directory for Docker Compose apps and set permissions first
+    mkdir -p /opt/apps
+    chmod 777 /opt/apps
+    chown -R debian:debian /opt/apps
 
     # Install necessary tools
     apt install -y apt-transport-https ca-certificates gnupg curl
@@ -51,11 +57,6 @@ resource "google_compute_instance" "pipeline_vm" {
     # Enable and start Docker
     systemctl enable docker
     systemctl start docker
-
-    # Create directory for Docker Compose apps and set permissions
-    mkdir -p /opt/apps
-    chmod 777 /opt/apps
-    chown -R debian:debian /opt/apps
     
     # Configure Docker credential helper for permanent authentication
     mkdir -p /home/debian/.docker
