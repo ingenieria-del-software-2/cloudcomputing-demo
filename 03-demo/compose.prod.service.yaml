@@ -1,22 +1,16 @@
 services:
   api: &main_app
-    build:
-      context: .
-      dockerfile: ./Dockerfile
-    image: product_catalog:${PRODUCT_CATALOG_VERSION:-latest}
+    image: ${IMAGE_URI}
     restart: always
-    env_file:
-      - .env
     labels:
-      # Enables traefik for this container.
       - traefik.enable=true
-      - traefik.http.routers.product_catalog.rule=Host(`${PRODUCT_CATALOG_TRAEFIK_HOST:-product_catalog.localhost}`)
-      - traefik.http.routers.product_catalog.rule=PathPrefix(`/product-catalog`)
-      - traefik.http.routers.product_catalog.entrypoints=http
+      - traefik.http.routers.product_catalog.rule=Host(`${PRODUCT_CATALOG_TRAEFIK_HOST:-product_catalog.localhost}`) || PathPrefix(`/product-catalog`)
+      - traefik.http.routers.product_catalog.entrypoints=web
       - traefik.http.routers.product_catalog.service=product_catalog
       - traefik.http.services.product_catalog.loadbalancer.server.port=${PRODUCT_CATALOG_PORT:-8000}
+      - traefik.http.middlewares.product_catalog_strip.stripPrefix.prefixes=/product-catalog
+      - traefik.http.routers.product_catalog.middlewares=product_catalog_strip
     networks:
-      - default
       - traefik-shared
     depends_on:
       db:
@@ -28,8 +22,7 @@ services:
       PRODUCT_CATALOG_DB_USER: product_catalog
       PRODUCT_CATALOG_DB_PASS: product_catalog
       PRODUCT_CATALOG_DB_BASE: product_catalog
-    volumes:
-      - ./src:/app/src
+      API_PATH_PREFIX: /product-catalog
 
   db:
     image: postgres:16.3-bullseye
@@ -38,11 +31,11 @@ services:
       POSTGRES_PASSWORD: "product_catalog"
       POSTGRES_USER: "product_catalog"
       POSTGRES_DB: "product_catalog"
+    networks:
+      - traefik-shared
     volumes:
       - product-catalog-db-data:/var/lib/postgresql/data
     restart: always
-    ports:
-      - "5432:5432"
     healthcheck:
       test: pg_isready -U product_catalog
       interval: 2s
@@ -50,9 +43,11 @@ services:
       retries: 40
 
   migrator:
-    image: product_catalog:${PRODUCT_CATALOG_VERSION:-latest}
+    image: ${IMAGE_URI}
     restart: "no"
     command: alembic upgrade heads
+    networks:
+      - traefik-shared
     environment:
       PRODUCT_CATALOG_DB_HOST: product-catalog-db
       PRODUCT_CATALOG_DB_PORT: 5432
@@ -62,14 +57,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    volumes:
-      - ./src:/app/src
 
 volumes:
   product-catalog-db-data:
     name: product-catalog-db-data
 
 networks:
-  # Network for traefik.
   traefik-shared:
-    name: traefik-shared
+    external: true
