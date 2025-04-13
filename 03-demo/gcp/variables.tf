@@ -33,6 +33,12 @@ variable "ssh_private_key_path" {
   default     = "~/.ssh/tu_clave_gcp"
 }
 
+variable "ssh_public_key_path" {
+  description = "Ruta local hacia tu clave pública SSH que se agregará a la VM"
+  type        = string
+  default     = "~/.ssh/tu_clave_gcp.pub"
+}
+
 variable "microservice_name" {
   description = "Nombre del microservicio (y del repo en Artifact Registry)"
   type        = string

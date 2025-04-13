@@ -17,6 +17,11 @@ resource "google_compute_instance" "pipeline_vm" {
     access_config {}
   }
 
+  # Add SSH key to VM instance
+  metadata = {
+    ssh-keys = "debian:${file("${pathexpand(var.ssh_public_key_path)}")}"
+  }
+
   # Attach service account with proper permissions
   service_account {
     email  = google_service_account.pipeline_vm_sa.email
