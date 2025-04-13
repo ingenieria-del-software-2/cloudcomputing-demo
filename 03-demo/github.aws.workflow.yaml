@@ -1,26 +1,25 @@
-name: Build, push & deploy to EC2
+name: CD
 
-on:
-  push:
-    branches: [main]
+on: push
 
 env:
   AWS_REGION: us-east-1
-  MICROSERVICE_NAME: product_catalog                    # <--- Cambiá esto para otro microservicio
+  MICROSERVICE_NAME: product_catalog
   IMAGE_TAG: ${{ github.sha }}
   ECR_URI: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: ${{ env.MICROSERVICE_NAME }}
+  ECR_REPOSITORY: product_catalog
 
 jobs:
   build:
-    name: Build and Push to ECR
+    name: Build and push image
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.build-image.outputs.image }}
+
     steps:
-      - name: Checkout code
+      # ----- SOURCE -----
+      - name: Checkout repo
         uses: actions/checkout@v4
 
+      # ----- AWS / ECR -----
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
@@ -29,43 +28,50 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
-        run: |
-          aws ecr get-login-password | docker login --username AWS --password-stdin $ECR_URI
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push image
-        id: build-image
+      # ----- BUILD & PUSH -----
+      - name: Build and push Docker image
         run: |
-          IMAGE_URI=$ECR_URI/$ECR_REPOSITORY:$IMAGE_TAG
-          docker build -t $IMAGE_URI .
-          docker push $IMAGE_URI
-          echo "image=$IMAGE_URI" >> $GITHUB_OUTPUT
+          set -e
+          IMAGE_URI="${ECR_URI}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          echo "Building image $IMAGE_URI"
+          docker build -t "$IMAGE_URI" .
+          docker push  "$IMAGE_URI"
 
   deploy:
-    name: Deploy to EC2 via SCP + SSH
-    needs: build
+    name: Deploy to EC2
     runs-on: ubuntu-latest
+    needs: build
+    
     steps:
-      - name: Checkout code
+      # ----- COPY COMPOSE FILE -----
+      - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: Upload docker-compose to EC2
+        
+      - name: Upload PROD docker compose to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
+          username: ec2-user
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: compose.yaml
+          source: compose.prod.yml
           target: /opt/apps/${{ env.MICROSERVICE_NAME }}
 
-      - name: Deploy with SSH
+      # ----- REMOTE DEPLOY -----
+      - name: SSH & deploy
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
+          username: ec2-user
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             cd /opt/apps/${{ env.MICROSERVICE_NAME }}
-            export MICROSERVICE_NAME_VERSION=${{ needs.build.outputs.image }}
+
+            # Construct the same image URI as in the build job
+            IMAGE_URI="${{ env.ECR_URI }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+            echo "IMAGE_URI=$IMAGE_URI" > .env
+
             docker compose pull
-            docker compose up -d --remove-orphans
+            docker compose -f compose.prod.yml up -d --remove-orphans
