@@ -37,3 +37,9 @@ variable "microservice_name" {
   description = "Nombre del microservicio (y del repo en Artifact Registry)"
   type        = string
 }
+
+variable "allowed_ip_cidr" {
+  description = "CIDR block allowed to access SSH, HTTP, Traefik, and Jaeger"
+  type        = string
+  default     = "0.0.0.0/0"
+}
