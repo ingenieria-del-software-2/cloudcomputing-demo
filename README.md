@@ -245,20 +245,17 @@ Tanto en AWS como en GCP, se automatiza la creación de los permisos necesarios 
 
 #### AWS - IAM User para ECR
 
+El usuario para el pipeline se crea automáticamente mediante Terraform, junto con sus permisos y credenciales de acceso:
+
 ```bash
-# Crear usuario IAM
-aws iam create-user --user-name pipeline-user
+# Obtén el ID de acceso (Access Key) del output de Terraform
+terraform output -raw pipeline_user_access_key_id
 
-# Asignar permisos para acceso total a ECR
-aws iam attach-user-policy \
-  --user-name pipeline-user \
-  --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
-
-# (Manual) Crear una access key (guárdala en GitHub Secrets)
-aws iam create-access-key --user-name pipeline-user
+# Obtén la clave secreta (Secret Access Key) del output de Terraform
+terraform output -raw pipeline_user_secret_access_key
 ```
 
-Este flujo estará definido en Terraform, excepto la generación de la access key, que debe guardarse como secreto en GitHub Actions (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
+Estos valores generados deben guardarse como secretos en GitHub Actions (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). Al usar el comando `terraform output -raw`, obtienes directamente el valor sin formato adicional, lo que facilita su uso en scripts o como variables de entorno.
 
 #### GCP - Service Account para Artifact Registry
 
