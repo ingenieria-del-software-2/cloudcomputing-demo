@@ -7,6 +7,11 @@ resource "aws_instance" "docker_instance" {
   security_groups        = [aws_security_group.ec2_sg.name]
   depends_on = [ aws_ecr_repository.microservice_repo ]
 
+  root_block_device {
+    volume_size = var.disk_size_gb
+    volume_type = "gp2"
+  }
+
   user_data = <<-EOF
     #!/bin/bash
     yum update -y

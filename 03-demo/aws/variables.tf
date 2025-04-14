@@ -19,6 +19,18 @@ variable "allowed_ip_cidr" {
   default     = "0.0.0.0/0"
 }
 
+# Disk size in GB
+variable "disk_size_gb" {
+  description = "Tamaño del disco en GB (máximo 30GB para free tier)"
+  type        = number
+  default     = 8
+  # ⚠️ Remover validación de tamaño del disco si se se necesita más de 30GB, pero esto esta fuera de free tier
+  validation {
+    condition     = var.disk_size_gb <= 30
+    error_message = "El tamaño del disco no puede exceder los 30GB en free tier."
+  }
+}
+
 # SSH key pair name for EC2 instance
 variable "ssh_key_name" {
   description = "Existing AWS SSH key pair name"

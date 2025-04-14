@@ -1,9 +1,10 @@
-project_id = "tu-proyecto-id"
+project_id = "tu-proyecto-id-de-gcp"
 region     = "us-central1"
 zone       = "us-central1-a"
 microservice_name = "shopping-experience"
 vm_name = "pipeline-vm"
 vm_machine_type = "e2-micro"
+disk_size_gb = 16
 ssh_private_key_path  = "~/.ssh/gcp-key"
 ssh_public_key_path   = "~/.ssh/gcp-key.pub"
 allowed_ip_cidr       = "0.0.0.0/0"  # o tu IP pública por seguridad

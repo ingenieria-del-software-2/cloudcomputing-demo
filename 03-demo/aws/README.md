@@ -50,7 +50,16 @@ ssh_private_key_path  = "/path/to/fiuba-demo.pem" # Ruta a tu clave privada SSH
 allowed_ip_cidr       = "0.0.0.0/0"            # CIDR de IPs permitidas (por seguridad, limita a tu IP)
 region                = "us-east-1"            # Región AWS
 microservice_name     = "product_catalog"      # Nombre del microservicio/repo ECR
+disk_size_gb          = 16                      # Tamaño del disco en GB (máximo 30GB para free tier)
 ```
+
+## Límites del Free Tier
+
+### Almacenamiento
+- **Tamaño de disco**: La variable `disk_size_gb` permite configurar el tamaño del volumen de la instancia EC2.
+- **Free Tier**: AWS ofrece 30GB de almacenamiento EBS (SSD) en su capa gratuita.
+- **Validación**: El código incluye una validación que impide configurar un disco mayor a 30GB para evitar cargos adicionales.
+- **Valor predeterminado**: 16GB, suficiente para la mayoría de casos de uso de desarrollo.
 
 ## Despliegue
 

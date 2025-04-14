@@ -135,10 +135,20 @@ project_id          = "tu-proyecto-id-de-gcp"  # Obligatorio: ID de tu proyecto 
 region              = "us-central1"            # Región GCP
 zone                = "us-central1-a"          # Zona GCP
 microservice_name   = "product_catalog"        # Nombre del microservicio/repo
+vm_machine_type     = "e2-micro"               # Tipo de máquina para la VM
+disk_size_gb        = 16                       # Tamaño del disco en GB (máximo 30GB para free tier)
 ssh_private_key_path = "~/.ssh/gcp-key"        # Ruta a tu clave privada SSH
 ssh_public_key_path = "~/.ssh/gcp-key.pub"     # Ruta a tu clave pública SSH
 allowed_ip_cidr     = "0.0.0.0/0"              # CIDR de IPs permitidas (por seguridad, limita a tu IP)
 ```
+
+## Límites del Free Tier
+
+### Almacenamiento
+- **Tamaño de disco**: La variable `disk_size_gb` permite configurar el tamaño del disco de arranque de la VM.
+- **Free Tier**: GCP ofrece 30GB de almacenamiento en disco estándar (pd-standard) en su capa gratuita.
+- **Validación**: El código incluye una validación que impide configurar un disco mayor a 30GB para evitar cargos adicionales.
+- **Valor predeterminado**: 16GB, suficiente para la mayoría de casos de uso de desarrollo.
 
 ## Despliegue
 

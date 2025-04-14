@@ -17,6 +17,7 @@ resource "google_compute_instance" "pipeline_vm" {
   boot_disk {
     initialize_params {
       image = "projects/debian-cloud/global/images/family/debian-12"
+      size  = var.disk_size_gb
     }
   }
 
