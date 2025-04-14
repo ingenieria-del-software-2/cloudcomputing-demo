@@ -91,6 +91,19 @@ Después de completar estos pasos, podrás desplegar recursos en GCP usando tu c
 
 **IMPORTANTE**: A diferencia de AWS, GCP no tiene un gestor de pares de claves integrado. Debes generar y configurar tus propias claves SSH.
 
+## ⚠️ APIs de Google Cloud requeridas
+
+Para que el pipeline de despliegue en GCP funcione correctamente, debes habilitar las siguientes APIs en tu proyecto de Google Cloud:
+
+- **Compute Engine API** - Para el despliegue y gestión de VMs
+- **IAM Credentials API** - Para la autenticación y autorización del Service Account
+
+Puedes habilitar estas APIs desde la consola de Google Cloud o usando el siguiente comando:
+
+```bash
+gcloud services enable compute.googleapis.com iamcredentials.googleapis.com
+```
+
 ### Pasos para configurar SSH:
 
 1. **Genera un par de claves SSH** si no tienes uno:
