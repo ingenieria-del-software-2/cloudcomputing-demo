@@ -235,6 +235,19 @@ Estos secretos deben configurarse en la sección **Settings > Secrets and variab
 > 🧠 El URI de la imagen en Artifact Registry se construye así:  
 > `\${{ secrets.REGION }}-docker.pkg.dev/\${{ secrets.GCP_PROJECT_ID }}/<repo>/<microservicio>:<tag>`
 
+## ⚠️ APIs de Google Cloud requeridas
+
+Para que el pipeline de despliegue en GCP funcione correctamente, debes habilitar las siguientes APIs en tu proyecto de Google Cloud:
+
+- **Compute Engine API** - Para el despliegue y gestión de VMs
+- **IAM Credentials API** - Para la autenticación y autorización del Service Account
+
+Puedes habilitar estas APIs desde la consola de Google Cloud o usando el siguiente comando:
+
+```bash
+gcloud services enable compute.googleapis.com iamcredentials.googleapis.com
+```
+
 ## 🔐 Permisos del Pipeline
 
 Tanto en AWS como en GCP, Terraform automatiza la creación de los roles, permisos y cuentas necesarios para el pipeline CI/CD. Sin embargo, las credenciales secretas (access keys y service account keys) deben obtenerse después del despliegue para configurarlas en GitHub Actions.
