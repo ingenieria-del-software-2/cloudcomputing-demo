@@ -11,17 +11,11 @@ resource "google_project_iam_member" "artifact_registry_writer" {
   member  = "serviceAccount:${google_service_account.pipeline_user.email}"
 }
 
-# Service Account for VM
-resource "google_service_account" "pipeline_vm_sa" {
-  account_id   = "pipeline-vm-sa"
-  display_name = "Pipeline VM Service Account"
-}
-
-# Grant Artifact Registry Reader permission to VM Service Account
-resource "google_project_iam_member" "artifact_registry_reader" {
+# Asignar rol Storage Admin para permisos en GCR
+resource "google_project_iam_member" "storage_admin" {
   project = var.project_id
-  role    = "roles/artifactregistry.reader"
-  member  = "serviceAccount:${google_service_account.pipeline_vm_sa.email}"
+  role    = "roles/storage.admin"
+  member  = "serviceAccount:${google_service_account.pipeline_user.email}"
 }
 
 # Generar key JSON para la Service Account
@@ -35,3 +29,4 @@ output "pipeline_service_account_key" {
   sensitive   = true
   description = "JSON key para pipeline-user service account"
 }
+

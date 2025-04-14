@@ -15,7 +15,7 @@ output "instance_name" {
 }
 
 # Output: Artifact Registry repository URL
-output "repository_url" {
+output "artifact_registry_url" {
   value = "${var.region}-docker.pkg.dev/${var.project_id}/${var.microservice_name}"
 }
 
