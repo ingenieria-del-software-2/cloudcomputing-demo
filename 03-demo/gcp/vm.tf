@@ -39,22 +39,26 @@ resource "google_compute_instance" "pipeline_vm" {
 
   metadata_startup_script = <<-EOF
     #!/bin/bash
-    # Update packages
-    # apt update -y
+    set -e
 
-    # # Create directory for Docker Compose apps and set permissions first
-    # mkdir -p /opt/apps
-    # chmod 777 /opt/apps
-    # chown -R luiscusihuaman88:luiscusihuaman88 /opt/apps
+    # Crear directorio para apps Docker y permisos
+    mkdir -p /opt/apps
+    chmod 777 /opt/apps
+    chown -R luiscusihuaman88:luiscusihuaman88 /opt/apps
 
-    # Install Google Cloud SDK
-    curl -sSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -xz && ./google-cloud-sdk/install.sh --quiet
+    # Instalar Google Cloud SDK
+    curl -sSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -xz
+    ./google-cloud-sdk/install.sh --quiet
+
+    # Instalar Docker en Debian 12
+    apt-get update && apt-get install -y ca-certificates curl gnupg
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/debian/gpg | tee /etc/apt/keyrings/docker.asc > /dev/null
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+      https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
-    # Install Docker via official Docker script
-    curl -fsSL https://get.docker.com | sh
-    systemctl enable docker
-    systemctl start docker
-
     # # Add user to docker group
     usermod -aG docker luiscusihuaman88
     
@@ -62,11 +66,12 @@ resource "google_compute_instance" "pipeline_vm" {
     mkdir -p /home/luiscusihuaman88/.docker
     echo '{"credHelpers": {"${var.region}-docker.pkg.dev": "gcloud"}}' > /home/luiscusihuaman88/.docker/config.json
     chown -R luiscusihuaman88:luiscusihuaman88 /home/luiscusihuaman88/.docker
+    echo "DONE" > /var/log/startup-script-done
   EOF
 
   tags = ["pipeline"]
 
-
+  # Copiar archivo compose.infra.yaml
   provisioner "file" {
     source      = "../compose.infra.yaml"
     destination = "/opt/apps/compose.infra.yaml"
@@ -79,23 +84,37 @@ resource "google_compute_instance" "pipeline_vm" {
     }
   }
 
-  # Ejecutar Docker Compose automáticamente
-  # provisioner "remote-exec" {
-  #   inline = [
-  #     "echo 'Waiting for Docker to be installed and available...'",
-  #     "sudo systemctl is-active docker || sudo systemctl start docker",
-  #     "while ! docker info > /dev/null 2>&1; do sleep 5; echo 'Waiting for Docker to be ready...'; done",
-  #     "cd /opt/apps",
-  #     "echo 'Ensuring traefik-shared network exists...'",
-  #     "docker network inspect traefik-shared >/dev/null 2>&1 || docker network create traefik-shared",
-  #     "docker compose -f compose.infra.yaml up -d"
-  #   ]
+  # Espera a que el script de arranque termine
+  provisioner "remote-exec" {
+    inline = [
+      "echo '😴 Waiting for startup script to finish...'",
+      # ⚠️ 7 MINUTES TAKES TO FINISH ⚠️
+      "until [ -f /var/log/startup-script-done ]; do sleep 2; echo '🕑 Waiting for startup script... (7 min total)'; done",
+      "echo '✅ Startup script completed.'",
+    ]
 
-  #   connection {
-  #     type        = "ssh"
-  #     user        = local.username
-  #     host        = self.network_interface[0].access_config[0].nat_ip
-  #     private_key = file(pathexpand(var.ssh_private_key_path))
-  #   }
-  # }
+    connection {
+      type        = "ssh"
+      user        = local.username
+      host        = self.network_interface[0].access_config[0].nat_ip
+      private_key = file(pathexpand(var.ssh_private_key_path))
+    }
+  }
+  # Ejecutar Docker Compose
+    provisioner "remote-exec" {
+    inline = [
+      "cd /opt/apps",
+      "echo '🌐 Creating traefik-shared network...'",
+      "docker network inspect traefik-shared >/dev/null 2>&1 || docker network create traefik-shared",
+      "echo '🐳 Starting services...'",
+      "docker compose -f compose.infra.yaml up -d"
+    ]
+
+    connection {
+      type        = "ssh"
+      user        = local.username
+      host        = self.network_interface[0].access_config[0].nat_ip
+      private_key = file(pathexpand(var.ssh_private_key_path))
+    }
+  }
 }
