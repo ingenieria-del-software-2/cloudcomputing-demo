@@ -5,9 +5,9 @@ on: push
 env:
   AWS_REGION: us-east-1
   MICROSERVICE_NAME: product_catalog
+  ECR_REPOSITORY: product_catalog
   IMAGE_TAG: ${{ github.sha }}
   ECR_URI: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
-  ECR_REPOSITORY: product_catalog
 
 jobs:
   build:
@@ -31,13 +31,14 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # ----- BUILD & PUSH -----
-      - name: Build and push Docker image
-        run: |
-          set -e
-          IMAGE_URI="${ECR_URI}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-          echo "Building image $IMAGE_URI"
-          docker build -t "$IMAGE_URI" .
-          docker push  "$IMAGE_URI"
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.ECR_URI }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy to EC2
