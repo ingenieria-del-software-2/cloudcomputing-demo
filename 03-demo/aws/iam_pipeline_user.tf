@@ -15,13 +15,13 @@ resource "aws_iam_access_key" "pipeline_user_key" {
 }
 
 # Mostrar las credenciales del access key generadas (¡Manejar con precaución!)
-output "pipeline_user_access_key_id" {
+output "AWS_ACCESS_KEY_ID" {
   value       = aws_iam_access_key.pipeline_user_key.id
   sensitive = true
   description = "Access Key ID para el usuario pipeline-user"
 }
 
-output "pipeline_user_secret_access_key" {
+output "AWS_SECRET_ACCESS_KEY" {
   value       = aws_iam_access_key.pipeline_user_key.secret
   sensitive = true
   description = "Secret Access Key para el usuario pipeline-user"

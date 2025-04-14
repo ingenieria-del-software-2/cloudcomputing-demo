@@ -1,16 +1,3 @@
-# Pipeline credentials
-output "AWS_ACCESS_KEY_ID" {
-  value       = aws_iam_access_key.pipeline_user_key.id
-  description = "Access key del usuario IAM `pipeline-user`"
-  sensitive   = true
-}
-
-output "AWS_SECRET_ACCESS_KEY" {
-  value       = aws_iam_access_key.pipeline_user_key.secret
-  description = "Secret key del usuario IAM `pipeline-user`"
-  sensitive   = true
-}
-
 output "AWS_ACCOUNT_ID" {
   value       = data.aws_caller_identity.current.account_id
   description = "ID numérico de tu cuenta AWS (sin espacios ni guiones)"

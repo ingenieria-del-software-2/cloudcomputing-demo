@@ -263,8 +263,8 @@ Terraform crea el usuario IAM `pipeline-user` con permisos para publicar imágen
 terraform apply
 
 # Obtén las credenciales (generadas automáticamente)
-terraform output -raw pipeline_user_access_key_id
-terraform output -raw pipeline_user_secret_access_key
+terraform output -raw AWS_ACCESS_KEY_ID
+terraform output -raw AWS_SECRET_ACCESS_KEY
 ```
 
 **Configuración en GitHub Actions**:
