@@ -5,8 +5,6 @@ on: push
 env:
   REGION: us-central1
   IMAGE_TAG: ${{ github.sha }}
-  GCP_USERNAME: debian
-  GCR_REPOSITORY: shopping-experience
   MICROSERVICE_NAME: shopping-experience
 
 jobs:
@@ -19,25 +17,34 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # ----- GCP / GCR -----
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      # ----- GCP Authentication -----
+      - id: auth
+        name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-          export_default_credentials: true
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          token_format: 'access_token'
 
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker ${{ env.GCR_HOSTNAME }}
+      # ----- Set up BuildX and Docker -----
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # ----- BUILD & PUSH -----
-      - name: Build and push Docker image
-        run: |
-          set -e
-          IMAGE_URI="gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.GCR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
-          echo "Building image $IMAGE_URI"
-          docker build -t "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
+      - name: Login to Google Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      # ----- Build & Push -----
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.MICROSERVICE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy to GCE VM
@@ -53,7 +60,7 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.GCP_VM_HOST }}
-          username: ${{ env.GCP_USERNAME }}
+          username: ${{ secrets.GCP_USERNAME }}
           key: ${{ secrets.GCP_SSH_KEY }}
           source: compose.prod.yml
           target: /opt/apps/${{ env.MICROSERVICE_NAME }}
@@ -63,14 +70,13 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.GCP_VM_HOST }}
-          username: ${{ env.GCP_USERNAME }}
+          username: ${{ secrets.GCP_USERNAME }}
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
             set -e
             cd /opt/apps/${{ env.MICROSERVICE_NAME }}
-
             # Construct the same image URI as in the build job
-            IMAGE_URI="gcr.io/${{ secrets.GCP_PROJECT_ID }}/${{ env.GCR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+            IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.MICROSERVICE_NAME }}:${{ env.IMAGE_TAG }}"
             echo "IMAGE_URI=$IMAGE_URI" > .env
 
             docker compose pull

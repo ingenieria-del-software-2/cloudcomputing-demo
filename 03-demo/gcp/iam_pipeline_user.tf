@@ -11,10 +11,24 @@ resource "google_project_iam_member" "artifact_registry_writer" {
   member  = "serviceAccount:${google_service_account.pipeline_user.email}"
 }
 
-# Asignar rol Storage Admin para permisos en GCR
+#Asignar rol Storage Admin para permisos en GCR
 resource "google_project_iam_member" "storage_admin" {
   project = var.project_id
   role    = "roles/storage.admin"
+  member  = "serviceAccount:${google_service_account.pipeline_user.email}"
+}
+
+# Asignar rol Service Account User para permitir getAccessToken
+resource "google_project_iam_member" "service_account_user" {
+  project = var.project_id
+  role    = "roles/iam.serviceAccountUser"
+  member  = "serviceAccount:${google_service_account.pipeline_user.email}"
+}
+
+# Asignar rol Service Account Token Creator para permitir getAccessToken
+resource "google_project_iam_member" "service_account_token_creator" {
+  project = var.project_id
+  role    = "roles/iam.serviceAccountTokenCreator"
   member  = "serviceAccount:${google_service_account.pipeline_user.email}"
 }
 
