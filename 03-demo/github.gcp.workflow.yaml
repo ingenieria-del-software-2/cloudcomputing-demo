@@ -5,6 +5,7 @@ on: push
 env:
   REGION: us-central1
   IMAGE_TAG: ${{ github.sha }}
+  REPOSITORY: shopping-experience
   MICROSERVICE_NAME: shopping-experience
 
 jobs:
@@ -42,7 +43,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.MICROSERVICE_NAME }}:${{ env.IMAGE_TAG }}
+          tags: ${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.MICROSERVICE_NAME }}:${{ env.IMAGE_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -76,8 +77,8 @@ jobs:
             set -e
             cd /opt/apps/${{ env.MICROSERVICE_NAME }}
             # Construct the same image URI as in the build job
-            IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.MICROSERVICE_NAME }}:${{ env.IMAGE_TAG }}"
+            IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.MICROSERVICE_NAME }}:${{ env.IMAGE_TAG }}"
             echo "IMAGE_URI=$IMAGE_URI" > .env
 
-            docker compose pull
+            docker compose -f compose.prod.yml pull
             docker compose -f compose.prod.yml up -d --remove-orphans
