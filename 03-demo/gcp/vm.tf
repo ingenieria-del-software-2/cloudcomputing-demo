@@ -35,7 +35,7 @@ resource "google_compute_instance" "pipeline_vm" {
   # Configurar acceso SSH con el usuario detectado automáticamente
   metadata = {
     enable-oslogin = "FALSE"
-    ssh-keys       = "luiscusihuaman88:${file(pathexpand(var.ssh_public_key_path))}"
+    ssh-keys       = "${local.username}:${file(pathexpand(var.ssh_public_key_path))}"
   }
 
   metadata_startup_script = <<-EOF
@@ -45,7 +45,7 @@ resource "google_compute_instance" "pipeline_vm" {
     # Crear directorio para apps Docker y permisos
     mkdir -p /opt/apps
     chmod 777 /opt/apps
-    chown -R luiscusihuaman88:luiscusihuaman88 /opt/apps
+    chown -R ${local.username}:${local.username} /opt/apps
 
     # Instalar Google Cloud SDK
     curl -sSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz | tar -xz
@@ -61,12 +61,12 @@ resource "google_compute_instance" "pipeline_vm" {
     apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     
     # # Add user to docker group
-    usermod -aG docker luiscusihuaman88
+    usermod -aG docker ${local.username}
     
     # # Configure Docker credential helper for permanent authentication
-    mkdir -p /home/luiscusihuaman88/.docker
-    echo '{"credHelpers": {"${var.region}-docker.pkg.dev": "gcloud"}}' > /home/luiscusihuaman88/.docker/config.json
-    chown -R luiscusihuaman88:luiscusihuaman88 /home/luiscusihuaman88/.docker
+    mkdir -p /home/${local.username}/.docker
+    echo '{"credHelpers": {"${var.region}-docker.pkg.dev": "gcloud"}}' > /home/${local.username}/.docker/config.json
+    chown -R ${local.username}:${local.username} /home/${local.username}/.docker
     echo "DONE" > /var/log/startup-script-done
   EOF
 
