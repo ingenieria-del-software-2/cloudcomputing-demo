@@ -227,10 +227,10 @@ Estos secretos deben configurarse en la sección **Settings > Secrets and variab
 | Secreto                   | Descripción                                                                   |
 |---------------------------|-------------------------------------------------------------------------------|
 | `GCP_PROJECT_ID`          | ID del proyecto de GCP                                                        |
+| `GCP_SERVICE_ACCOUNT_KEY` | JSON con credenciales del Service Account `pipeline-user`                     |
 | `GCP_USERNAME`            | Nombre de usuario para SSH (usualmente es el username de la cuenta de Google) |
 | `GCP_VM_HOST`             | Dirección IP o DNS público de la instancia VM de GCP                          |
 | `GCP_SSH_KEY`             | Clave privada para conexión SSH (sin passphrase, en texto plano)              |
-| `GCP_SERVICE_ACCOUNT_KEY` | JSON con credenciales del Service Account `pipeline-user`                     |
 
 > 🧠 El URI de la imagen en Artifact Registry se construye así:  
 > `\${{ secrets.REGION }}-docker.pkg.dev/\${{ secrets.GCP_PROJECT_ID }}/<repo>/<microservicio>:<tag>`
@@ -278,11 +278,11 @@ Terraform crea la cuenta de servicio `pipeline-user` con permisos para publicar 
 terraform apply
 
 # Extrae la clave JSON (codificada en base64)
-terraform output -raw pipeline_service_account_key | base64 --decode > pipeline_credentials.json
+terraform output -raw GCP_SERVICE_ACCOUNT_KEY_ENCODED | base64 --decode > gcp_service_account_key.json
 ```
 
 **Configuración en GitHub Actions**:
-Usa el archivo `pipeline_credentials.json` generado para configurar el secreto `GCP_SERVICE_ACCOUNT_KEY` en GitHub Actions.
+Usa el archivo `gcp_service_account_key.json` generado para configurar el secreto `GCP_SERVICE_ACCOUNT_KEY` en GitHub Actions.
 
 **Uso en workflow**:
 ```yaml
@@ -294,7 +294,7 @@ Usa el archivo `pipeline_credentials.json` generado para configurar el secreto `
 
 **Limpieza de seguridad**: Después de configurar los secretos, elimina las credenciales locales:
 ```bash
-rm pipeline_credentials.json  # Para GCP
+rm gcp_service_account_key.json  # Para GCP
 ```
 
 ## 🧹 Limpieza Final  

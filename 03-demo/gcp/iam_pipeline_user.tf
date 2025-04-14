@@ -24,7 +24,7 @@ resource "google_service_account_key" "pipeline_user_key" {
 }
 
 # Output con el contenido del JSON (sensible, guarda esto en GitHub Secrets inmediatamente)
-output "pipeline_service_account_key" {
+output "GCP_SERVICE_ACCOUNT_KEY_ENCODED" {
   value       = google_service_account_key.pipeline_user_key.private_key
   sensitive   = true
   description = "JSON key para pipeline-user service account"
