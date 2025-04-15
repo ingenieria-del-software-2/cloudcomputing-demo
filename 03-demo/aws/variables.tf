@@ -1,3 +1,10 @@
+# AWS IAM User profile
+variable "aws_profile" {
+  description = "AWS profile to use for authentication"
+  type        = string
+  default     = "iamadmin-general"
+}
+
 # AWS region
 variable "region" {
   description = "AWS region to deploy resources"

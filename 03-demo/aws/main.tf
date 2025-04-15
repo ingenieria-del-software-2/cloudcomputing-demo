@@ -1,7 +1,6 @@
-# Configure AWS Provider
 provider "aws" {
   region = var.region
-  profile = "iamadmin-general"
+  profile = var.aws_profile
 }
 
 # Fetch latest Amazon Linux AMI from AWS SSM
