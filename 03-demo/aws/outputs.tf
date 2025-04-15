@@ -1,3 +1,5 @@
+data "aws_caller_identity" "current" {}
+
 output "AWS_ACCOUNT_ID" {
   value       = data.aws_caller_identity.current.account_id
   description = "ID numérico de tu cuenta AWS (sin espacios ni guiones)"
