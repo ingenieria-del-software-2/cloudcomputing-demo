@@ -38,4 +38,7 @@ override.tf.json
 .terraformrc
 terraform.rc
 
+# Environment variables file (may contain sensitive data)
+.env
+
 # End of https://www.toptal.com/developers/gitignore/api/terraform
