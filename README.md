@@ -103,13 +103,13 @@ Control de acceso y políticas IAM avanzadas con CloudFormation.
 
 La plantilla crea:
 
-- Dos buckets S3 (`animals` y `dogs`).
+- Dos buckets S3 (`cats` y `dogs`).
 - Usuario IAM: `Messi`.
 - Política IAM: acceso a todo excepto al bucket `dogs`.
 
 ### 📤 Uso del Bucket S3  
 
-- En `animals`: sube imágenes de gatos.
+- En `cats`: sube imágenes de gatos.
 - En `dogs`: sube imágenes de perros.
 
 ### 🛡️ Verificación Acceso IAM  

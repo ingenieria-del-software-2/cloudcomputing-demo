@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   This template implements an IAM user 'Messi'
   An S3 bucket for dog pictues
-  An S3 bucket for other animals
+  An S3 bucket for other cats
   And permissions appropriate for Messi.
 Parameters:
   messipassword:
@@ -12,7 +12,7 @@ Parameters:
 Resources:
   dogpics:
     Type:  AWS::S3::Bucket
-  animalpics:
+  catpics:
     Type:  AWS::S3::Bucket
   messi:
     Type: AWS::IAM::User
@@ -38,11 +38,11 @@ Resources:
             Resource: [ !GetAtt dogpics.Arn, !Join ['', [!GetAtt dogpics.Arn, '/*']]]
 Outputs:
   dogpicsbucketname:
-    Description: Bucketname for dogpictures (the best animal!)
+    Description: Bucketname for dogpictures (the best animal btw)
     Value: !Ref dogpics
-  animalpicsbucketname:
-    Description: Bucketname for animalpics (the almost best animals!)
-    Value: !Ref animalpics
+  catpicsbucketname:
+    Description: Bucketname for catpics
+    Value: !Ref catpics
   messiusername:
     Description: IAM Username for Messi
     Value: !Ref messi
