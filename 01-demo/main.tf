@@ -88,7 +88,7 @@ resource "aws_iam_policy_attachment" "ssm_policy_attachment" {
 # EC2 Instance with User Data for NGINX Installation
 resource "aws_instance" "ec2_instance" {
   ami                    = data.aws_ssm_parameter.ami.value
-  instance_type          = "t2.micro"
+  instance_type          = "t3.micro"
   key_name               = var.ssh_key_name
   iam_instance_profile   = aws_iam_instance_profile.session_manager_instance_profile.name
   security_groups        = [aws_security_group.instance_sg.name]
