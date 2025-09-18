@@ -24,6 +24,23 @@ Resources:
       LoginProfile:
         Password: !Ref messipassword
         PasswordResetRequired: "true"
+  AppAccessS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AppAccessS3Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref policy
   policy:
     Type: AWS::IAM::ManagedPolicy
     Properties: 
@@ -48,3 +65,6 @@ Outputs:
   messiusername:
     Description: IAM Username for Messi
     Value: !Ref messi
+  AppAccessS3RoleArn:
+    Description: ARN of the AppAccessS3Role role
+    Value: !GetAtt AppAccessS3Role.Arn
