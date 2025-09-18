@@ -7,8 +7,10 @@ Description: >
 Parameters:
   messipassword:
     NoEcho: true
-    Description: IAM User Messi's Password
+    Description: IAM User Messi's Password - Must contain at least 8 characters with uppercase, lowercase, number, and symbol
     Type: String
+    AllowedPattern: '(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{8,}'
+    ConstraintDescription: Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one symbol
 Resources:
   dogpics:
     Type:  AWS::S3::Bucket
