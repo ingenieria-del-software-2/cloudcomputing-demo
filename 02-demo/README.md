@@ -49,6 +49,9 @@ A Flask web application that demonstrates S3 bucket access with IAM policies, di
    export AWS_ACCESS_KEY_ID=$(jq -r '.AccessKeyId' /tmp/creds.json)
    export AWS_SECRET_ACCESS_KEY=$(jq -r '.SecretAccessKey' /tmp/creds.json)
    export AWS_SESSION_TOKEN=$(jq -r '.SessionToken' /tmp/creds.json)
+   
+   # Verify the assumed role
+   aws sts get-caller-identity
    ```
 
    **Important:** When using assumed roles, comment out `AWS_PROFILE` in your `.env` file and use the temporary credentials set as environment variables instead.
