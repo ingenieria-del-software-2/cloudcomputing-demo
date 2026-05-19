@@ -1,5 +1,31 @@
 # Belo Progressive Delivery Lab
 
+This directory now contains two local demo tracks:
+
+- **CompraFiubi Order-to-Ship GameDay**: the PDR-aligned four-service saga used for Black Friday incident practice. Start with [`docs/order-to-ship-gameday.md`](./docs/order-to-ship-gameday.md).
+- **Progressive Delivery Lab**: the original kind, Istio, Flagger, and k6 rollout lab documented below.
+
+## CompraFiubi Order-to-Ship GameDay
+
+The local GameDay path covers `order-management`, `fulfillment-planning`, `shipment-preparation`, and `buyer-order-tracking` with Docker Compose, MiniStack, PostgreSQL containers, and service `/metrics` endpoints.
+
+It intentionally excludes Terraform, real AWS IAM changes, and Grafana dashboards. Local incident evidence is driven by environment variables, scripts, `/metrics`, logs, and Prometheus HTTP queries.
+
+Quick checks from `05-demo`:
+
+```bash
+docker compose config
+make test-full-saga-e2e
+node scripts/black-friday-load.mjs --dry-run --orders 5 --duplicate-rate 0.4 --seed demo
+```
+
+GameDay references:
+
+- Local runbook: [`docs/order-to-ship-gameday.md`](./docs/order-to-ship-gameday.md)
+- Prometheus queries without Grafana: [`docs/war-room-prometheus-queries.md`](./docs/war-room-prometheus-queries.md)
+- Black Friday load generator: [`scripts/black-friday-load.mjs`](./scripts/black-friday-load.mjs)
+- CPU distraction generator: [`scripts/cpu-noise.mjs`](./scripts/cpu-noise.mjs)
+
 A local [kind](https://kind.sigs.k8s.io/) lab demonstrating [Flagger](https://flagger.app/) progressive delivery rollouts, validated end-to-end with [k6](https://k6.io/).
 
 ## Quickstart

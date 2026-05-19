@@ -317,7 +317,7 @@ services:
       PAYMENT_INTAKE_SQS_QUEUE_URL: http://ministack:4566/000000000000/payments-approved-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
       TRACKING_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
-      IDEMPOTENCY_ENABLED: "true"
+      IDEMPOTENCY_ENABLED: "${IDEMPOTENCY_ENABLED:-true}"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:
       - name: order-http
@@ -350,7 +350,7 @@ services:
       INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-commitment-intake
       TRACKING_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
-      PROMESA_EXPRESS_ENABLED: "true"
+      PROMESA_EXPRESS_ENABLED: "${PROMESA_EXPRESS_ENABLED:-true}"
       PROMESA_EXPRESS_LATENCY_MS: "${PROMESA_EXPRESS_LATENCY_MS:-750}"
       PROMESA_EXPRESS_ERROR_RATE: "${PROMESA_EXPRESS_ERROR_RATE:-0.25}"
       WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-1}"
@@ -422,7 +422,7 @@ services:
       INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
       SQS_QUEUE_URL: http://ministack:4566/000000000000/customer-experience-events
       TRACKING_CONSUMER_ENABLED: "true"
-      TRACKING_CONSUMER_DELAY_MS: "0"
+      TRACKING_CONSUMER_DELAY_MS: "${TRACKING_CONSUMER_DELAY_MS:-0}"
       TRACKING_MAX_MESSAGES_PER_POLL: "${TRACKING_MAX_MESSAGES_PER_POLL:-10}"
       WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-1}"
       READY_CHECK_TIMEOUT_MS: "500"

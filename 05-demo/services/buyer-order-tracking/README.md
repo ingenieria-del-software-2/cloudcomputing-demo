@@ -59,3 +59,16 @@ dynamodb_request_duration_seconds
 ```text
 TRACKING_CONSUMER_DELAY_MS=3000   Keeps the saga moving while buyer-visible state becomes stale
 ```
+
+## Buyer-Facing Timeline
+
+Timeline entries include stable internal status plus a buyer-friendly `message`, for example:
+
+```text
+ORDER_CONFIRMED         Tu compra fue confirmada.
+FULFILLMENT_COMMITTED   Estamos preparando tu compra.
+READY_TO_DISPATCH       Tu compra esta lista para despacho.
+CANCELLED               Tu compra no pudo avanzar: STOCK_UNAVAILABLE.
+```
+
+The service accepts both `orders.order_cancelled.v1` and `orders.order_cancellation_requested.v1` so the local saga remains compatible with the PDR naming variants.

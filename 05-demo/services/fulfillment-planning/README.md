@@ -28,3 +28,26 @@ GET  /readyz
 GET  /version
 GET  /metrics
 ```
+
+## Controlled Failure Mode
+
+```text
+PROMESA_EXPRESS_ENABLED=true        Enables the degradable commercial feature
+PROMESA_EXPRESS_LATENCY_MS=1500     Adds artificial latency to fulfillment decisions
+PROMESA_EXPRESS_ERROR_RATE=0.20     Emits at-risk commitments for some orders
+WORKER_CONCURRENCY=1                Makes backlog easier to observe during load
+```
+
+Mitigation for the local GameDay is to recreate the service with `PROMESA_EXPRESS_ENABLED=false`, latency/error set to `0`, and higher `WORKER_CONCURRENCY` when the journey SLO is degraded.
+
+## Metrics
+
+```text
+fulfillment_commitment_duration_seconds
+delivery_promise_created_within_15s_ratio
+confirmed_orders_without_stock_shortage_cancellation_ratio
+delivery_promise_stability_ratio
+promesa_express_failures_total
+event_backlog_depth
+event_dlq_depth
+```

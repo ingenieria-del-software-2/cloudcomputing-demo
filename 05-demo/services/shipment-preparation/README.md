@@ -39,13 +39,14 @@ SELLER_CUTOFF_EXPIRED=true               Marks the shipment as blocked by cutoff
 
 ## Local S3 Retry/Fix Runbook
 
-Use this when the demo simulates missing `s3:PutObject` permission with `S3_PUT_OBJECT_ALLOWED=false`.
+Use this when the demo simulates missing `s3:PutObject` permission with `S3_PUT_OBJECT_ALLOWED=false`. This is a local simulation of the business impact, not proof of a real IAM policy.
 
 ```bash
 S3_PUT_OBJECT_ALLOWED=false make compose-app-up
 curl -fsS -X POST http://localhost:3030/internal/events -H 'Content-Type: application/json' -d @commitment.json
 curl -fsS http://localhost:3030/metrics | grep 's3_put_object_total\|dispatch_document_failure_count'
-S3_PUT_OBJECT_ALLOWED=true curl -fsS -X POST http://localhost:3030/shipments/<shipment_id>/retry-documents
+S3_PUT_OBJECT_ALLOWED=true docker compose up -d --wait --no-deps --force-recreate shipment-preparation
+curl -fsS -X POST http://localhost:3030/shipments/<shipment_id>/retry-documents
 curl -fsS http://localhost:3030/shipments/<shipment_id>/documents
 ```
 

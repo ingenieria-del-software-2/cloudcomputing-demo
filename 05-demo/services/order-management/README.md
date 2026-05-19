@@ -44,3 +44,20 @@ PAYMENT_INTAKE_CONSUMER_ENABLED=false
 PAYMENT_INTAKE_SQS_QUEUE_URL=http://localhost:4566/000000000000/payments-approved-intake
 IDEMPOTENCY_ENABLED=true
 ```
+
+## Controlled Failure Mode
+
+```text
+IDEMPOTENCY_ENABLED=false   Allows duplicate payment attempts to demonstrate why payment_id idempotency matters
+```
+
+The normal GameDay mitigation is `IDEMPOTENCY_ENABLED=true` plus the PostgreSQL unique index on idempotent `payment_id` records.
+
+## Metrics
+
+```text
+order_confirmation_within_5s_ratio
+duplicate_order_attempts_total
+event_backlog_depth
+event_dlq_depth
+```
