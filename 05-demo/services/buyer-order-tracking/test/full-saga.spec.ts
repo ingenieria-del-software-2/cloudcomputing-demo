@@ -83,6 +83,9 @@ describe('full order-to-buyer-tracking saga', () => {
     const metrics = await getText(`${buyerTrackingUrl}/metrics`);
     expect(metrics).toContain('buyer_tracking_freshness_seconds');
     expect(metrics).toContain('buyer_tracking_freshness_p95');
+    expect(metrics).toContain('critical_order_journey_under_60s_ratio');
+    expect(metrics).toContain('event_backlog_depth');
+    expect(metrics).toContain('event_dlq_depth');
     expect(metrics).toContain('dynamodb_request_duration_seconds');
   });
 });
@@ -109,6 +112,7 @@ async function postPaymentApproved(input: {
         site_id: 'MLA',
         currency: 'ARS',
         gross_amount: 12999.99,
+        payment_approved_at: new Date().toISOString(),
         items: [
           {
             item_id: 'CFB-CARPINCHO-USB',

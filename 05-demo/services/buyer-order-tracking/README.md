@@ -37,6 +37,8 @@ INPUT_SQS_QUEUE_URL=http://localhost:4566/000000000000/buyer-tracking-events
 SQS_QUEUE_URL=http://localhost:4566/000000000000/customer-experience-events
 TRACKING_CONSUMER_ENABLED=true
 TRACKING_CONSUMER_DELAY_MS=0
+TRACKING_MAX_MESSAGES_PER_POLL=10
+QUEUE_METRICS_POLL_INTERVAL_MS=5000
 ```
 
 ## Metrics
@@ -45,6 +47,10 @@ TRACKING_CONSUMER_DELAY_MS=0
 buyer_tracking_freshness_seconds
 buyer_tracking_freshness_p95
 buyer_tracking_freshness_under_60s_ratio
+critical_order_journey_duration_seconds
+critical_order_journey_under_60s_ratio
+event_backlog_depth
+event_dlq_depth
 dynamodb_request_duration_seconds
 ```
 

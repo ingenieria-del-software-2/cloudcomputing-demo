@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-dynamodb';
 import {
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
   SQSClient,
@@ -96,6 +97,8 @@ export interface TrackingRecord {
   created_at: string;
   timeline: TimelineEntry[];
   processed_event_ids: string[];
+  journey_started_at?: string;
+  critical_journey_recorded_at?: string;
 }
 
 export interface TrackingAcceptedResponse {
@@ -111,6 +114,7 @@ interface TrackingUpdateResult {
   record: TrackingRecord;
   duplicate: boolean;
   previousStatus?: VisibleStatus;
+  criticalJourneyDurationSeconds?: number;
 }
 
 class TrackingEventPublishError extends Error {
@@ -128,6 +132,7 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   private sqsClient?: SQSClient;
   private stopping = false;
   private workers: Promise<void>[] = [];
+  private queueMetricsTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly config: ConfigService,
@@ -137,11 +142,15 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     await this.ensureTable();
+    this.startQueueMetricsRefresh();
     this.startWorkers();
   }
 
   async onModuleDestroy(): Promise<void> {
     this.stopping = true;
+    if (this.queueMetricsTimer) {
+      clearInterval(this.queueMetricsTimer);
+    }
     this.sqsClient?.destroy();
     this.dynamodbClient?.destroy();
     await Promise.allSettled(this.workers);
@@ -246,90 +255,66 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
   private async upsertTracking(
     event: TrackingEventDto,
   ): Promise<TrackingUpdateResult> {
-    const existing = await this.findTrackingByOrderId(event.payload.order_id);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const existing = await this.findTrackingByOrderId(event.payload.order_id);
 
-    if (existing?.processed_event_ids.includes(event.event_id)) {
-      return { record: existing, duplicate: true };
-    }
-
-    const now = new Date().toISOString();
-    const incomingStatus = statusForEvent(event.event_name);
-    const nextStatus = chooseVisibleStatus(
-      existing?.visible_status,
-      incomingStatus,
-    );
-    const record: TrackingRecord = {
-      order_id: event.payload.order_id,
-      buyer_id:
-        stringValue(event.payload.buyer_id) ?? existing?.buyer_id ?? 'unknown',
-      visible_status: nextStatus,
-      last_event_name: event.event_name,
-      last_event_occurred_at: event.occurred_at,
-      correlation_id: event.correlation_id,
-      seller_id: stringValue(event.payload.seller_id) ?? existing?.seller_id,
-      payment_id: stringValue(event.payload.payment_id) ?? existing?.payment_id,
-      fulfillment_commitment_id:
-        stringValue(event.payload.fulfillment_commitment_id) ??
-        existing?.fulfillment_commitment_id,
-      shipment_id:
-        stringValue(event.payload.shipment_id) ?? existing?.shipment_id,
-      estimated_delivery_date:
-        stringValue(event.payload.estimated_delivery_date) ??
-        existing?.estimated_delivery_date,
-      updated_at: now,
-      created_at: existing?.created_at ?? now,
-      timeline: appendTimelineEntry(existing?.timeline ?? [], event, now),
-      processed_event_ids: [
-        ...(existing?.processed_event_ids ?? []),
-        event.event_id,
-      ],
-    };
-
-    const putStartedAt = performance.now();
-
-    try {
-      await this.document().send(
-        new PutCommand({
-          TableName: this.tableName(),
-          Item: record,
-          ConditionExpression:
-            'attribute_not_exists(order_id) OR NOT contains(processed_event_ids, :event_id)',
-          ExpressionAttributeValues: {
-            ':event_id': event.event_id,
-          },
-        }),
-      );
-      this.recordDynamoDbDuration(
-        'put_item',
-        'success',
-        this.config.get<string>('SERVICE_VERSION', 'v1'),
-        putStartedAt,
-      );
-    } catch (error) {
-      this.recordDynamoDbDuration(
-        'put_item',
-        'failure',
-        this.config.get<string>('SERVICE_VERSION', 'v1'),
-        putStartedAt,
-      );
-      if (isConditionalCheckFailed(error)) {
-        const current = await this.findTrackingByOrderId(
-          event.payload.order_id,
-        );
-
-        if (current) {
-          return { record: current, duplicate: true };
-        }
+      if (existing?.processed_event_ids.includes(event.event_id)) {
+        return { record: existing, duplicate: true };
       }
 
-      throw error;
+      const now = new Date().toISOString();
+      const next = nextTrackingRecord(existing, event, now);
+      const record = next.record;
+      const putStartedAt = performance.now();
+
+      try {
+        await this.document().send(
+          new PutCommand({
+            TableName: this.tableName(),
+            Item: record,
+            ConditionExpression: existing
+              ? 'updated_at = :previous_updated_at AND NOT contains(processed_event_ids, :event_id)'
+              : 'attribute_not_exists(order_id)',
+            ExpressionAttributeValues: existing
+              ? {
+                  ':event_id': event.event_id,
+                  ':previous_updated_at': existing.updated_at,
+                }
+              : undefined,
+          }),
+        );
+        this.recordDynamoDbDuration(
+          'put_item',
+          'success',
+          this.config.get<string>('SERVICE_VERSION', 'v1'),
+          putStartedAt,
+        );
+        return {
+          record,
+          duplicate: false,
+          previousStatus: existing?.visible_status,
+          criticalJourneyDurationSeconds: next.criticalJourneyDurationSeconds,
+        };
+      } catch (error) {
+        this.recordDynamoDbDuration(
+          'put_item',
+          'failure',
+          this.config.get<string>('SERVICE_VERSION', 'v1'),
+          putStartedAt,
+        );
+
+        if (!isConditionalCheckFailed(error)) {
+          throw error;
+        }
+      }
     }
 
-    return {
-      record,
-      duplicate: false,
-      previousStatus: existing?.visible_status,
-    };
+    const current = await this.findTrackingByOrderId(event.payload.order_id);
+    if (current?.processed_event_ids.includes(event.event_id)) {
+      return { record: current, duplicate: true };
+    }
+
+    throw new Error('tracking optimistic lock retry exhausted');
   }
 
   private acceptDuplicate(
@@ -387,6 +372,13 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       version,
       freshnessSeconds,
     });
+    if (result.criticalJourneyDurationSeconds !== undefined) {
+      this.metrics.observeCriticalJourney({
+        visibleStatus: result.record.visible_status,
+        version,
+        durationSeconds: result.criticalJourneyDurationSeconds,
+      });
+    }
     this.logger.info('buyer_tracking_updated', {
       request_id: command.requestId,
       event_id: command.event.event_id,
@@ -419,8 +411,10 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         }),
       );
       this.metrics.recordSqsPublish('success', version, this.outputQueueName());
+      void this.refreshQueueDepthMetrics(version);
     } catch (error) {
       this.metrics.recordSqsPublish('failure', version, this.outputQueueName());
+      void this.refreshQueueDepthMetrics(version);
       this.logger.error('tracking_event_publish_failed', {
         event_id: event.event_id,
         event_name: event.event_name,
@@ -478,12 +472,12 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         const response = await this.sqs().send(
           new ReceiveMessageCommand({
             QueueUrl: this.inputQueueUrl(),
-            MaxNumberOfMessages: 1,
+            MaxNumberOfMessages: this.maxMessagesPerPoll(),
             WaitTimeSeconds: this.waitTimeSeconds(),
           }),
         );
 
-        for (const message of response.Messages ?? []) {
+        for (const message of prioritizeMessages(response.Messages ?? [])) {
           await this.processMessage(workerIndex, message);
         }
       } catch (error) {
@@ -533,6 +527,7 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       });
       await this.deleteMessage(message.ReceiptHandle);
       this.metrics.recordSqsConsume('success', version, this.inputQueueName());
+      void this.refreshQueueDepthMetrics(version);
       this.logger.info('tracking_worker_message_processed', {
         event_id: event.event_id,
         event_name: event.event_name,
@@ -545,7 +540,80 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
       });
     } catch {
       this.metrics.recordSqsConsume('failure', version, this.inputQueueName());
+      void this.refreshQueueDepthMetrics(version);
       // Leave the message in SQS so the queue redrive policy can move it to DLQ.
+    }
+  }
+
+  private async refreshQueueDepthMetrics(version: string): Promise<void> {
+    await Promise.all(
+      uniqueQueueUrls([this.inputQueueUrl(), this.outputQueueUrl()]).map(
+        async (queueUrl) => this.refreshQueueDepthMetric(queueUrl, version),
+      ),
+    );
+  }
+
+  private startQueueMetricsRefresh(): void {
+    const version = this.config.get<string>('SERVICE_VERSION', 'v1');
+    void this.refreshQueueDepthMetrics(version);
+
+    const intervalMs = this.queueMetricsPollIntervalMs();
+    if (intervalMs <= 0) {
+      return;
+    }
+
+    this.queueMetricsTimer = setInterval(() => {
+      void this.refreshQueueDepthMetrics(version);
+    }, intervalMs);
+  }
+
+  private async refreshQueueDepthMetric(
+    queueUrl: string,
+    version: string,
+  ): Promise<void> {
+    try {
+      const response = await this.sqs().send(
+        new GetQueueAttributesCommand({
+          QueueUrl: queueUrl,
+          AttributeNames: [
+            'ApproximateNumberOfMessages',
+            'ApproximateNumberOfMessagesNotVisible',
+            'ApproximateNumberOfMessagesDelayed',
+            'RedrivePolicy',
+          ],
+        }),
+      );
+      this.metrics.recordEventBacklogDepth(
+        queueNameFromUrl(queueUrl),
+        version,
+        queueDepth(response.Attributes),
+      );
+
+      const dlqUrl = deadLetterQueueUrl(
+        queueUrl,
+        response.Attributes?.RedrivePolicy,
+      );
+      if (!dlqUrl) {
+        return;
+      }
+
+      const dlqResponse = await this.sqs().send(
+        new GetQueueAttributesCommand({
+          QueueUrl: dlqUrl,
+          AttributeNames: [
+            'ApproximateNumberOfMessages',
+            'ApproximateNumberOfMessagesNotVisible',
+            'ApproximateNumberOfMessagesDelayed',
+          ],
+        }),
+      );
+      this.metrics.recordEventDlqDepth(
+        queueNameFromUrl(dlqUrl),
+        version,
+        queueDepth(dlqResponse.Attributes),
+      );
+    } catch {
+      // Queue depth metrics are best-effort and must not affect event handling.
     }
   }
 
@@ -784,6 +852,30 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
 
     return Math.min(value, 300_000);
   }
+
+  private maxMessagesPerPoll(): number {
+    const value = Number(
+      this.config.get<string>('TRACKING_MAX_MESSAGES_PER_POLL', '10'),
+    );
+
+    if (!Number.isInteger(value) || value < 1) {
+      return 1;
+    }
+
+    return Math.min(value, 10);
+  }
+
+  private queueMetricsPollIntervalMs(): number {
+    const value = Number(
+      this.config.get<string>('QUEUE_METRICS_POLL_INTERVAL_MS', '5000'),
+    );
+
+    if (!Number.isFinite(value)) {
+      return 5000;
+    }
+
+    return Math.max(0, Math.floor(value));
+  }
 }
 
 function response(
@@ -799,6 +891,63 @@ function response(
     version,
     timeline_length: record.timeline.length,
   };
+}
+
+function nextTrackingRecord(
+  existing: TrackingRecord | undefined,
+  event: TrackingEventDto,
+  now: string,
+): { record: TrackingRecord; criticalJourneyDurationSeconds?: number } {
+  const incomingStatus = statusForEvent(event.event_name);
+  const nextStatus = chooseVisibleStatus(
+    existing?.visible_status,
+    incomingStatus,
+  );
+  const replaceLastEvent = shouldReplaceLastEvent(existing, event);
+  const timeline = appendTimelineEntry(existing?.timeline ?? [], event, now);
+  const record: TrackingRecord = {
+    order_id: event.payload.order_id,
+    buyer_id:
+      stringValue(event.payload.buyer_id) ?? existing?.buyer_id ?? 'unknown',
+    visible_status: nextStatus,
+    last_event_name: replaceLastEvent
+      ? event.event_name
+      : (existing?.last_event_name ?? event.event_name),
+    last_event_occurred_at: replaceLastEvent
+      ? eventOccurredAt(event)
+      : (existing?.last_event_occurred_at ?? eventOccurredAt(event)),
+    correlation_id: existing?.correlation_id ?? event.correlation_id,
+    seller_id: stringValue(event.payload.seller_id) ?? existing?.seller_id,
+    payment_id: stringValue(event.payload.payment_id) ?? existing?.payment_id,
+    fulfillment_commitment_id:
+      stringValue(event.payload.fulfillment_commitment_id) ??
+      existing?.fulfillment_commitment_id,
+    shipment_id:
+      stringValue(event.payload.shipment_id) ?? existing?.shipment_id,
+    estimated_delivery_date:
+      stringValue(event.payload.estimated_delivery_date) ??
+      existing?.estimated_delivery_date,
+    updated_at: now,
+    created_at: existing?.created_at ?? now,
+    timeline,
+    processed_event_ids: [
+      ...(existing?.processed_event_ids ?? []),
+      event.event_id,
+    ],
+    journey_started_at:
+      existing?.journey_started_at ?? journeyStartedAtForEvent(event),
+    critical_journey_recorded_at: existing?.critical_journey_recorded_at,
+  };
+  const criticalJourneyDurationSeconds = terminalJourneyDurationSeconds(
+    record,
+    now,
+  );
+
+  if (criticalJourneyDurationSeconds !== undefined) {
+    record.critical_journey_recorded_at = now;
+  }
+
+  return { record, criticalJourneyDurationSeconds };
 }
 
 function appendTimelineEntry(
@@ -829,6 +978,8 @@ function statusForEvent(eventName: TrackingEventName): VisibleStatus {
   switch (eventName) {
     case 'orders.order_confirmed.v1':
       return 'ORDER_CONFIRMED';
+    case 'orders.order_cancelled.v1':
+      return 'CANCELLED';
     case 'fulfillment.commitment_confirmed.v1':
       return 'FULFILLMENT_COMMITTED';
     case 'fulfillment.commitment_at_risk.v1':
@@ -851,6 +1002,64 @@ function chooseVisibleStatus(
   }
 
   return statusRank(incoming) >= statusRank(current) ? incoming : current;
+}
+
+function shouldReplaceLastEvent(
+  existing: TrackingRecord | undefined,
+  event: TrackingEventDto,
+): boolean {
+  if (!existing) {
+    return true;
+  }
+
+  const incomingStatus = statusForEvent(event.event_name);
+  const incomingRank = statusRank(incomingStatus);
+  const currentRank = statusRank(existing.visible_status);
+
+  if (incomingRank !== currentRank) {
+    return incomingRank > currentRank;
+  }
+
+  return (
+    Date.parse(eventOccurredAt(event)) >=
+    Date.parse(existing.last_event_occurred_at)
+  );
+}
+
+function terminalJourneyDurationSeconds(
+  record: TrackingRecord,
+  now: string,
+): number | undefined {
+  if (
+    record.critical_journey_recorded_at ||
+    !isTerminal(record.visible_status)
+  ) {
+    return undefined;
+  }
+
+  const orderConfirmed = record.timeline.find(
+    (entry) => entry.status === 'ORDER_CONFIRMED',
+  );
+  const journeyStartedAt =
+    record.journey_started_at ?? orderConfirmed?.occurred_at;
+  const startedAtMs = journeyStartedAt
+    ? Date.parse(journeyStartedAt)
+    : Number.NaN;
+  const visibleAtMs = Date.parse(now);
+
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(visibleAtMs)) {
+    return undefined;
+  }
+
+  return Math.max(0, (visibleAtMs - startedAtMs) / 1000);
+}
+
+function isTerminal(status: VisibleStatus): boolean {
+  return (
+    status === 'READY_TO_DISPATCH' ||
+    status === 'DISPATCH_BLOCKED' ||
+    status === 'CANCELLED'
+  );
 }
 
 function statusRank(status: VisibleStatus): number {
@@ -880,8 +1089,25 @@ function eventOccurredAt(event: TrackingEventDto): string {
     stringValue(event.payload.at_risk_at) ??
     stringValue(event.payload.ready_to_dispatch_at) ??
     stringValue(event.payload.blocked_at) ??
+    stringValue(event.payload.cancelled_at) ??
     event.occurred_at
   );
+}
+
+function journeyStartedAtForEvent(event: TrackingEventDto): string | undefined {
+  const explicit = validIsoOrUndefined(
+    stringValue(event.payload.payment_approved_at),
+  );
+
+  if (explicit) {
+    return explicit;
+  }
+
+  if (event.event_name === 'orders.order_confirmed.v1') {
+    return eventOccurredAt(event);
+  }
+
+  return undefined;
 }
 
 function eventFreshnessSeconds(occurredAt: string): number {
@@ -962,6 +1188,10 @@ function toTrackingRecord(item: Record<string, unknown>): TrackingRecord {
           typeof eventId === 'string' ? [eventId] : [],
         )
       : [],
+    journey_started_at: stringValue(item.journey_started_at),
+    critical_journey_recorded_at: stringValue(
+      item.critical_journey_recorded_at,
+    ),
   };
 }
 
@@ -1000,6 +1230,43 @@ function visibleStatusValue(value: unknown): VisibleStatus {
   return 'ORDER_CONFIRMED';
 }
 
+function prioritizeMessages<T extends { Body?: string }>(messages: T[]): T[] {
+  return [...messages].sort(
+    (left, right) => messagePriority(right) - messagePriority(left),
+  );
+}
+
+function messagePriority(message: { Body?: string }): number {
+  const event = parseEvent(message.Body);
+  return event ? eventPriority(event.event_name) : 0;
+}
+
+function eventPriority(eventName: string): number {
+  switch (eventName) {
+    case 'shipping.dispatch_blocked.v1':
+    case 'shipping.shipment_ready_to_dispatch.v1':
+    case 'orders.order_cancelled.v1':
+    case 'fulfillment.commitment_failed.v1':
+      return 100;
+    case 'fulfillment.commitment_at_risk.v1':
+      return 90;
+    case 'fulfillment.commitment_confirmed.v1':
+      return 60;
+    case 'orders.order_confirmed.v1':
+      return 50;
+    default:
+      return 0;
+  }
+}
+
+function validIsoOrUndefined(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  return Number.isFinite(Date.parse(value)) ? value : undefined;
+}
+
 function trackingEventNameValue(value: unknown): TrackingEventName {
   const eventName = stringValue(value);
 
@@ -1012,6 +1279,54 @@ function trackingEventNameValue(value: unknown): TrackingEventName {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function uniqueQueueUrls(queueUrls: string[]): string[] {
+  return Array.from(new Set(queueUrls));
+}
+
+function queueNameFromUrl(queueUrl: string): string {
+  return queueUrl.split('/').pop() ?? queueUrl;
+}
+
+function queueDepth(attributes: Record<string, string> | undefined): number {
+  return (
+    numberAttribute(attributes, 'ApproximateNumberOfMessages') +
+    numberAttribute(attributes, 'ApproximateNumberOfMessagesNotVisible') +
+    numberAttribute(attributes, 'ApproximateNumberOfMessagesDelayed')
+  );
+}
+
+function numberAttribute(
+  attributes: Record<string, string> | undefined,
+  name: string,
+): number {
+  const value = Number(attributes?.[name] ?? 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function deadLetterQueueUrl(
+  sourceQueueUrl: string,
+  redrivePolicy: string | undefined,
+): string | undefined {
+  if (!redrivePolicy) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(redrivePolicy) as {
+      deadLetterTargetArn?: string;
+    };
+    const queueName = parsed.deadLetterTargetArn?.split(':').pop();
+
+    if (!queueName) {
+      return undefined;
+    }
+
+    return `${sourceQueueUrl.slice(0, sourceQueueUrl.lastIndexOf('/') + 1)}${queueName}`;
+  } catch {
+    return undefined;
+  }
 }
 
 function durationMs(startedAt: number): number {

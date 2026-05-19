@@ -35,6 +35,7 @@ type TrackingRecordResponse = {
   order_id: string;
   buyer_id: string;
   visible_status: VisibleStatus;
+  last_event_name: string;
   estimated_delivery_date?: string;
   timeline: Array<{
     status: VisibleStatus;
@@ -89,6 +90,7 @@ describe('buyer-order-tracking ATDD', () => {
       SERVICE_VERSION: 'v1',
       SQS_QUEUE_URL: outputQueueUrl,
       SQS_WAIT_TIME_SECONDS: '1',
+      QUEUE_METRICS_POLL_INTERVAL_MS: '100',
       TRACKING_CONSUMER_DELAY_MS: '0',
       TRACKING_CONSUMER_ENABLED: 'true',
       TRACKING_TABLE_NAME: tableName,
@@ -239,6 +241,9 @@ describe('buyer-order-tracking ATDD', () => {
     expect(metrics.text).toContain(
       'buyer_tracking_freshness_under_60s_ratio{service="buyer-order-tracking",version="v1"} 1',
     );
+    expect(metrics.text).toContain(
+      'critical_order_journey_under_60s_ratio{service="buyer-order-tracking",version="v1"}',
+    );
   });
 
   it('ignores duplicate tracking events without duplicating timeline entries', async () => {
@@ -298,6 +303,73 @@ describe('buyer-order-tracking ATDD', () => {
       status: 'DISPATCH_BLOCKED',
       reason: 'DOCUMENT_UPLOAD_FAILED',
     });
+  });
+
+  it('shows cancelled when order-management emits order_cancelled', async () => {
+    const orderId = `ord_track_cancelled_${Date.now()}`;
+    const buyerId = `buyer_cancelled_${Date.now()}`;
+
+    await postEvent(orderConfirmedEvent(orderId, buyerId)).expect(202);
+    await receiveTrackingUpdate(orderId, 'ORDER_CONFIRMED');
+    await postEvent(orderCancelledEvent(orderId, buyerId)).expect(202);
+    await receiveTrackingUpdate(orderId, 'CANCELLED');
+
+    const tracking = await http()
+      .get(`/orders/${orderId}/tracking`)
+      .expect(200);
+    const body = tracking.body as TrackingRecordResponse;
+    expect(body.visible_status).toBe('CANCELLED');
+    expect(body.timeline.at(-1)).toMatchObject({
+      status: 'CANCELLED',
+      reason: 'STOCK_UNAVAILABLE',
+    });
+  });
+
+  it('does not let older events downgrade the terminal tracking state', async () => {
+    const orderId = `ord_track_late_${Date.now()}`;
+    const buyerId = `buyer_late_${Date.now()}`;
+
+    await postEvent(shipmentReadyEvent(orderId)).expect(202);
+    await postEvent(orderConfirmedEvent(orderId, buyerId)).expect(202);
+
+    const tracking = await http()
+      .get(`/orders/${orderId}/tracking`)
+      .expect(200);
+    const body = tracking.body as TrackingRecordResponse;
+    expect(body).toMatchObject({
+      order_id: orderId,
+      buyer_id: buyerId,
+      visible_status: 'READY_TO_DISPATCH',
+      last_event_name: 'shipping.shipment_ready_to_dispatch.v1',
+    });
+    expect(body.timeline.map((entry) => entry.status)).toEqual([
+      'ORDER_CONFIRMED',
+      'READY_TO_DISPATCH',
+    ]);
+  });
+
+  it('preserves all timeline entries under concurrent event delivery', async () => {
+    const orderId = `ord_track_concurrent_${Date.now()}`;
+    const buyerId = `buyer_concurrent_${Date.now()}`;
+
+    await Promise.all([
+      postEvent(orderConfirmedEvent(orderId, buyerId)).expect((response) => {
+        expect([200, 202]).toContain(response.status);
+      }),
+      postEvent(fulfillmentConfirmedEvent(orderId)).expect((response) => {
+        expect([200, 202]).toContain(response.status);
+      }),
+      postEvent(shipmentReadyEvent(orderId)).expect((response) => {
+        expect([200, 202]).toContain(response.status);
+      }),
+    ]);
+
+    const body = await waitForTracking(orderId, 'READY_TO_DISPATCH');
+    expect(body.timeline.map((entry) => entry.status)).toEqual([
+      'ORDER_CONFIRMED',
+      'FULFILLMENT_COMMITTED',
+      'READY_TO_DISPATCH',
+    ]);
   });
 
   function postEvent(event: TrackingEventDto) {
@@ -423,6 +495,7 @@ function orderConfirmedEvent(
       site_id: 'MLA',
       currency: 'ARS',
       gross_amount: 52999.99,
+      payment_approved_at: occurredAt,
       items: [
         {
           item_id: 'MLA123456789',
@@ -455,6 +528,7 @@ function fulfillmentConfirmedEvent(orderId: string): TrackingEventDto {
       fulfillment_model: 'seller_flex',
       origin_type: 'seller_location',
       estimated_delivery_date: '2026-05-14',
+      payment_approved_at: new Date(Date.now() - 1000).toISOString(),
       reserved_items: [
         {
           seller_sku: 'NIKE-AIR-BLK-42',
@@ -492,6 +566,7 @@ function shipmentReadyEvent(orderId: string): TrackingEventDto {
         },
       ],
       seller_cutoff_at: '2026-05-12T18:00:00-03:00',
+      payment_approved_at: new Date(Date.now() - 2000).toISOString(),
       ready_to_dispatch_at: occurredAt,
     },
   };
@@ -516,6 +591,33 @@ function dispatchBlockedEvent(orderId: string): TrackingEventDto {
       reason: 'DOCUMENT_UPLOAD_FAILED',
       seller_cutoff_at: '2026-05-12T18:00:00-03:00',
       blocked_at: occurredAt,
+    },
+  };
+}
+
+function orderCancelledEvent(
+  orderId: string,
+  buyerId: string,
+): TrackingEventDto {
+  const occurredAt = new Date(Date.now() + 1000).toISOString();
+
+  return {
+    event_id: newId('evt'),
+    event_name: 'orders.order_cancelled.v1',
+    event_version: '1.0',
+    occurred_at: occurredAt,
+    producer: 'order-management',
+    correlation_id: `checkout_${orderId}`,
+    causation_id: `evt_fulfillment_failed_${orderId}`,
+    idempotency_key: `order_id:${orderId}:cancellation`,
+    payload: {
+      order_id: orderId,
+      payment_id: `pay_${orderId}`,
+      buyer_id: buyerId,
+      seller_id: 'seller_445566',
+      reason: 'STOCK_UNAVAILABLE',
+      payment_approved_at: new Date(Date.now() - 1000).toISOString(),
+      cancelled_at: occurredAt,
     },
   };
 }

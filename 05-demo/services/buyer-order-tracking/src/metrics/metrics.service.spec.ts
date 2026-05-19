@@ -21,6 +21,11 @@ describe('MetricsService', () => {
       version: 'v1',
       durationSeconds: 0.01,
     });
+    metrics.observeCriticalJourney({
+      visibleStatus: 'READY_TO_DISPATCH',
+      version: 'v1',
+      durationSeconds: 2,
+    });
 
     const rendered = await metrics.render();
 
@@ -33,5 +38,8 @@ describe('MetricsService', () => {
       'buyer_tracking_freshness_under_60s_ratio{service="buyer-order-tracking",version="v1"} 1',
     );
     expect(rendered).toContain('dynamodb_request_duration_seconds');
+    expect(rendered).toContain(
+      'critical_order_journey_under_60s_ratio{service="buyer-order-tracking",version="v1"} 1',
+    );
   });
 });

@@ -27,12 +27,18 @@ export class MetricsService {
   private readonly freshness: Histogram<string>;
   private readonly freshnessP95: Gauge<string>;
   private readonly freshnessUnder60Ratio: Gauge<string>;
+  private readonly criticalJourneyDuration: Histogram<string>;
+  private readonly criticalJourneyUnder60Ratio: Gauge<string>;
   private readonly dynamodbDuration: Histogram<string>;
   private readonly sqsConsume: Counter<string>;
   private readonly sqsPublish: Counter<string>;
+  private readonly eventBacklogDepth: Gauge<string>;
+  private readonly eventDlqDepth: Gauge<string>;
   private readonly buildInfo: Gauge<string>;
   private freshnessTotal = 0;
   private freshnessUnder60 = 0;
+  private criticalJourneyTotal = 0;
+  private criticalJourneyUnder60 = 0;
   private readonly freshnessSamplesByVersion = new Map<string, number[]>();
 
   constructor(private readonly config: ConfigService = new ConfigService()) {
@@ -88,6 +94,19 @@ export class MetricsService {
       labelNames: ['service', 'version'],
       registers: [this.registry],
     });
+    this.criticalJourneyDuration = new Histogram({
+      name: 'critical_order_journey_duration_seconds',
+      help: 'End-to-end payment approval to terminal buyer-visible tracking duration',
+      labelNames: ['service', 'visible_status', 'version'],
+      buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300],
+      registers: [this.registry],
+    });
+    this.criticalJourneyUnder60Ratio = new Gauge({
+      name: 'critical_order_journey_under_60s_ratio',
+      help: 'Ratio of critical order journeys reaching terminal buyer-visible state under 60 seconds',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
     this.dynamodbDuration = new Histogram({
       name: 'dynamodb_request_duration_seconds',
       help: 'DynamoDB request latency for buyer tracking read/write operations',
@@ -105,6 +124,18 @@ export class MetricsService {
       name: 'sqs_publish_total',
       help: 'Total SQS publish attempts',
       labelNames: ['service', 'queue', 'status', 'version'],
+      registers: [this.registry],
+    });
+    this.eventBacklogDepth = new Gauge({
+      name: 'event_backlog_depth',
+      help: 'Approximate number of events waiting in the service queue',
+      labelNames: ['service', 'queue', 'version'],
+      registers: [this.registry],
+    });
+    this.eventDlqDepth = new Gauge({
+      name: 'event_dlq_depth',
+      help: 'Approximate number of events waiting in the service dead-letter queue',
+      labelNames: ['service', 'queue', 'version'],
       registers: [this.registry],
     });
     this.buildInfo = new Gauge({
@@ -205,6 +236,29 @@ export class MetricsService {
     );
   }
 
+  observeCriticalJourney(labels: {
+    visibleStatus: string;
+    version: string;
+    durationSeconds: number;
+  }): void {
+    this.criticalJourneyDuration.observe(
+      {
+        service: this.serviceName,
+        visible_status: labels.visibleStatus,
+        version: labels.version,
+      },
+      labels.durationSeconds,
+    );
+    this.criticalJourneyTotal += 1;
+    if (labels.durationSeconds < 60) {
+      this.criticalJourneyUnder60 += 1;
+    }
+    this.criticalJourneyUnder60Ratio.set(
+      { service: this.serviceName, version: labels.version },
+      this.criticalJourneyUnder60 / this.criticalJourneyTotal,
+    );
+  }
+
   recordSqsConsume(
     status: SqsStatus,
     version: string,
@@ -229,6 +283,20 @@ export class MetricsService {
       status,
       version,
     });
+  }
+
+  recordEventBacklogDepth(queue: string, version: string, depth: number): void {
+    this.eventBacklogDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
+  }
+
+  recordEventDlqDepth(queue: string, version: string, depth: number): void {
+    this.eventDlqDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
   }
 
   get contentType(): string {
