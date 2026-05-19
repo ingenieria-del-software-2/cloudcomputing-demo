@@ -84,6 +84,26 @@ services:
         --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:orders-confirmed-dlq","maxReceiveCount":"3"}'
         >/dev/null
 
+  fulfillment-commitment-queue:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=fulfillment-commitment-dlq&Version=2012-11-05'
+        >/dev/null;
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=fulfillment-commitment-intake&Version=2012-11-05'
+        --data 'Attribute.1.Name=RedrivePolicy'
+        --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:fulfillment-commitment-dlq","maxReceiveCount":"3"}'
+        >/dev/null
+
   order-postgres:
     image: postgres:16-alpine
     environment:
@@ -99,6 +119,26 @@ services:
       test:
         - CMD-SHELL
         - pg_isready -U order -d order_management
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  fulfillment-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fulfillment_planning
+      POSTGRES_USER: fulfillment
+      POSTGRES_PASSWORD: fulfillment
+    ports:
+      - name: fulfillment-postgres
+        target: 5432
+        published: "${FULFILLMENT_POSTGRES_PORT:-15433}"
+        protocol: tcp
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U fulfillment -d fulfillment_planning
       interval: 5s
       timeout: 3s
       retries: 30
@@ -188,6 +228,39 @@ services:
         app_protocol: http
     healthcheck: *node-healthcheck
 
+  fulfillment-planning:
+    image: fulfillment-planning:local
+    build:
+      context: .
+      dockerfile: build/docker/fulfillment-planning.Dockerfile
+    depends_on:
+      orders-confirmed-queue:
+        condition: service_completed_successfully
+      fulfillment-commitment-queue:
+        condition: service_completed_successfully
+      fulfillment-postgres:
+        condition: service_healthy
+    environment:
+      <<: [*aws-local, *service-meta]
+      NODE_ENV: production
+      PORT: "3000"
+      SERVICE_VERSION: v1
+      DATABASE_URL: postgresql://fulfillment:fulfillment@fulfillment-postgres:5432/fulfillment_planning
+      INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
+      SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-commitment-intake
+      PROMESA_EXPRESS_ENABLED: "true"
+      PROMESA_EXPRESS_LATENCY_MS: "750"
+      PROMESA_EXPRESS_ERROR_RATE: "0.25"
+      WORKER_CONCURRENCY: "1"
+      READY_CHECK_TIMEOUT_MS: "500"
+    ports:
+      - name: fulfillment-http
+        target: 3000
+        published: "${FULFILLMENT_PLANNING_PORT:-3020}"
+        protocol: tcp
+        app_protocol: http
+    healthcheck: *node-healthcheck
+
   receipt-worker:
     image: receipt-worker:local
     build:
@@ -218,6 +291,8 @@ services:
       transaction-api:
         condition: service_healthy
       order-management:
+        condition: service_healthy
+      fulfillment-planning:
         condition: service_healthy
     configs:
       - source: prometheus-config
@@ -252,3 +327,7 @@ configs:
           static_configs:
             - targets:
                 - order-management:3000
+        - job_name: fulfillment-planning
+          static_configs:
+            - targets:
+                - fulfillment-planning:3000
