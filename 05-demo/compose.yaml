@@ -84,6 +84,26 @@ services:
         --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:orders-confirmed-dlq","maxReceiveCount":"3"}'
         >/dev/null
 
+  payments-approved-queue:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=payments-approved-dlq&Version=2012-11-05'
+        >/dev/null;
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=payments-approved-intake&Version=2012-11-05'
+        --data 'Attribute.1.Name=RedrivePolicy'
+        --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:payments-approved-dlq","maxReceiveCount":"3"}'
+        >/dev/null
+
   fulfillment-commitment-queue:
     <<: *curl-one-shot
     depends_on:
@@ -279,6 +299,8 @@ services:
       context: .
       dockerfile: build/docker/order-management.Dockerfile
     depends_on:
+      payments-approved-queue:
+        condition: service_completed_successfully
       orders-confirmed-queue:
         condition: service_completed_successfully
       buyer-tracking-queue:
@@ -291,6 +313,8 @@ services:
       PORT: "3000"
       SERVICE_VERSION: v1
       DATABASE_URL: postgresql://order:order@order-postgres:5432/order_management
+      PAYMENT_INTAKE_CONSUMER_ENABLED: "${PAYMENT_INTAKE_CONSUMER_ENABLED:-true}"
+      PAYMENT_INTAKE_SQS_QUEUE_URL: http://ministack:4566/000000000000/payments-approved-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
       TRACKING_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
       IDEMPOTENCY_ENABLED: "true"
@@ -329,7 +353,7 @@ services:
       PROMESA_EXPRESS_ENABLED: "true"
       PROMESA_EXPRESS_LATENCY_MS: "${PROMESA_EXPRESS_LATENCY_MS:-750}"
       PROMESA_EXPRESS_ERROR_RATE: "${PROMESA_EXPRESS_ERROR_RATE:-0.25}"
-      WORKER_CONCURRENCY: "1"
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-1}"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:
       - name: fulfillment-http
@@ -363,12 +387,12 @@ services:
       SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
       SHIPMENT_DOCUMENTS_BUCKET: seller-dispatch-documents-lab
       S3_BAD_KEY_ENABLED: "false"
-      S3_PUT_OBJECT_ALLOWED: "true"
+      S3_PUT_OBJECT_ALLOWED: "${S3_PUT_OBJECT_ALLOWED:-true}"
       S3_TRANSIENT_FAILURES_BEFORE_SUCCESS: "0"
       S3_UPLOAD_MAX_ATTEMPTS: "2"
       S3_UPLOAD_RETRY_DELAY_MS: "25"
       SELLER_CUTOFF_EXPIRED: "false"
-      WORKER_CONCURRENCY: "1"
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-1}"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:
       - name: shipment-http
@@ -399,7 +423,8 @@ services:
       SQS_QUEUE_URL: http://ministack:4566/000000000000/customer-experience-events
       TRACKING_CONSUMER_ENABLED: "true"
       TRACKING_CONSUMER_DELAY_MS: "0"
-      WORKER_CONCURRENCY: "1"
+      TRACKING_MAX_MESSAGES_PER_POLL: "${TRACKING_MAX_MESSAGES_PER_POLL:-10}"
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-1}"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:
       - name: tracking-http

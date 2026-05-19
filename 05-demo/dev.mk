@@ -2,9 +2,9 @@
 	build build-ts build-ledger \
 	lint lint-ts lint-fix lint-go \
 	typecheck typecheck-ts \
-	test test-ts test-go test-integration test-e2e test-worker-e2e test-order-management-e2e test-fulfillment-planning-e2e test-shipment-preparation-e2e test-buyer-order-tracking-e2e test-full-saga-e2e test-prometheus \
+	test test-ts test-go test-integration test-e2e test-worker-e2e test-order-management-e2e test-fulfillment-planning-e2e test-shipment-preparation-e2e test-buyer-order-tracking-e2e test-full-saga-e2e test-full-saga-concurrency test-prometheus \
 	verify verify-transaction-api verify-receipt-worker verify-order-management verify-fulfillment-planning verify-shipment-preparation verify-buyer-order-tracking verify-ledger-service \
-	docker-build compose-up compose-app-up compose-deps-up compose-metrics-up compose-down compose-reset compose-logs
+	docker-build compose-up compose-app-up compose-deps-up compose-metrics-up compose-down compose-reset compose-logs sqs-backlog
 
 # --- Global & Go Targets ---
 build: build-ts build-ledger
@@ -78,9 +78,10 @@ define run_order_test
 	@set -euo pipefail; \
 	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
 	$(COMPOSE) up -d --wait ministack order-postgres; \
+	$(COMPOSE) run --rm payments-approved-queue; \
 	$(COMPOSE) run --rm orders-confirmed-queue; \
 	AWS_REGION=us-east-1 AWS_ENDPOINT_URL=$(MINISTACK_ENDPOINT) AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-	DATABASE_URL=$(ORDER_DATABASE_URL) SQS_QUEUE_URL=$(ORDERS_CONFIRMED_QUEUE_URL) $(1)
+	DATABASE_URL=$(ORDER_DATABASE_URL) PAYMENT_INTAKE_SQS_QUEUE_URL=$(PAYMENTS_APPROVED_QUEUE_URL) SQS_QUEUE_URL=$(ORDERS_CONFIRMED_QUEUE_URL) $(1)
 endef
 
 define run_fulfillment_test
@@ -146,6 +147,14 @@ test-full-saga-e2e:
 	ORDER_MANAGEMENT_URL=$(ORDER_MANAGEMENT_URL) BUYER_ORDER_TRACKING_URL=$(BUYER_ORDER_TRACKING_URL) \
 	$(PNPM) --dir $(BUYER_ORDER_TRACKING_DIR) run test:full-saga
 
+test-full-saga-concurrency:
+	@set -euo pipefail; \
+	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
+	PROMESA_EXPRESS_ERROR_RATE=0 PROMESA_EXPRESS_LATENCY_MS=0 WORKER_CONCURRENCY=$(SAGA_WORKER_CONCURRENCY) TRACKING_MAX_MESSAGES_PER_POLL=10 $(COMPOSE) up -d --wait --build order-management fulfillment-planning shipment-preparation buyer-order-tracking; \
+	ORDER_MANAGEMENT_URL=$(ORDER_MANAGEMENT_URL) BUYER_ORDER_TRACKING_URL=$(BUYER_ORDER_TRACKING_URL) \
+	$(PNPM) --dir $(BUYER_ORDER_TRACKING_DIR) run test:full-saga; \
+	$(MAKE) sqs-backlog
+
 test-prometheus:
 	@set -euo pipefail; \
 	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
@@ -179,6 +188,7 @@ compose-app-up:
 compose-deps-up compose-up:
 	$(COMPOSE) up -d ministack ledger-service
 	$(COMPOSE) run --rm receipt-queue
+	$(COMPOSE) run --rm payments-approved-queue
 	$(COMPOSE) run --rm orders-confirmed-queue
 	$(COMPOSE) run --rm fulfillment-commitment-queue
 	$(COMPOSE) run --rm buyer-tracking-queue
@@ -195,3 +205,20 @@ compose-down compose-reset:
 
 compose-logs:
 	$(COMPOSE) logs -f
+
+sqs-backlog:
+	@set -euo pipefail; \
+	for queue in $(PAYMENTS_APPROVED_QUEUE_URL) $(PAYMENTS_APPROVED_DLQ_URL) $(ORDERS_CONFIRMED_QUEUE_URL) $(ORDERS_CONFIRMED_DLQ_URL) $(FULFILLMENT_COMMITMENT_QUEUE_URL) $(FULFILLMENT_COMMITMENT_DLQ_URL) $(BUYER_TRACKING_QUEUE_URL) $(BUYER_TRACKING_DLQ_URL) $(CUSTOMER_EXPERIENCE_QUEUE_URL) $(CUSTOMER_EXPERIENCE_DLQ_URL); do \
+		name=$${queue##*/}; \
+		printf '%s\n' "==> $$name"; \
+		$(CURL) -fsS -X POST "$(MINISTACK_ENDPOINT)/" \
+			-H 'Content-Type: application/x-www-form-urlencoded' \
+			--data 'Action=GetQueueAttributes' \
+			--data 'Version=2012-11-05' \
+			--data-urlencode "QueueUrl=$$queue" \
+			--data 'AttributeName.1=ApproximateNumberOfMessages' \
+			--data 'AttributeName.2=ApproximateNumberOfMessagesNotVisible' \
+			--data 'AttributeName.3=ApproximateNumberOfMessagesDelayed' \
+			--data 'AttributeName.4=RedrivePolicy'; \
+		printf '\n'; \
+	done

@@ -33,10 +33,16 @@ LEDGER_SERVICE_DIR := services/ledger-service
 LEDGER_BASE_URL ?= http://127.0.0.1:3001
 MINISTACK_ENDPOINT ?= http://localhost:4566
 SQS_QUEUE_URL ?= http://localhost:4566/000000000000/receipt-commands
+PAYMENTS_APPROVED_QUEUE_URL ?= http://localhost:4566/000000000000/payments-approved-intake
+PAYMENTS_APPROVED_DLQ_URL ?= http://localhost:4566/000000000000/payments-approved-dlq
 ORDERS_CONFIRMED_QUEUE_URL ?= http://localhost:4566/000000000000/orders-confirmed-intake
+ORDERS_CONFIRMED_DLQ_URL ?= http://localhost:4566/000000000000/orders-confirmed-dlq
 FULFILLMENT_COMMITMENT_QUEUE_URL ?= http://localhost:4566/000000000000/fulfillment-commitment-intake
+FULFILLMENT_COMMITMENT_DLQ_URL ?= http://localhost:4566/000000000000/fulfillment-commitment-dlq
 BUYER_TRACKING_QUEUE_URL ?= http://localhost:4566/000000000000/buyer-tracking-events
+BUYER_TRACKING_DLQ_URL ?= http://localhost:4566/000000000000/buyer-tracking-events-dlq
 CUSTOMER_EXPERIENCE_QUEUE_URL ?= http://localhost:4566/000000000000/customer-experience-events
+CUSTOMER_EXPERIENCE_DLQ_URL ?= http://localhost:4566/000000000000/customer-experience-events-dlq
 TRACKING_TABLE_NAME ?= buyer-visible-order-state
 ORDER_DATABASE_URL ?= postgresql://order:order@localhost:15432/order_management
 FULFILLMENT_DATABASE_URL ?= postgresql://fulfillment:fulfillment@localhost:15433/fulfillment_planning
@@ -74,6 +80,7 @@ K6_REPORTS_DIR ?= reports
 EXPECTED_VERSION ?= v1
 VALIDATE_ATTEMPTS ?= 1
 VALIDATE_SLEEP_SECONDS ?= 1
+SAGA_WORKER_CONCURRENCY ?= 4
 
 include dev.mk
 include infra.mk
