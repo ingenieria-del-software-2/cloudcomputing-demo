@@ -1,8 +1,0 @@
-apiVersion: flagger.app/v1beta1
-kind: Canary
-metadata:
-  name: transaction-api
-  namespace: belo
-spec:
-  analysis:
-    threshold: 1

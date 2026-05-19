@@ -8,7 +8,6 @@ export interface LogFields {
   request_id?: string;
   operation_id?: string;
   transaction_id?: string;
-  ledger_entry_id?: string;
   command_id?: string;
   event_id?: string;
   event_name?: string;
@@ -28,7 +27,6 @@ export interface LogFields {
   detail?: string;
   error_message?: string;
   db?: string;
-  ledger_service?: string;
   sqs?: string;
 }
 

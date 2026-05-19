@@ -183,21 +183,9 @@ describe('ConfigFaultInjector', () => {
     } satisfies Partial<InjectedFaultError>);
   });
 
-  it('injects receipt publish operation failures from existing SQS toggle', () => {
-    const injector = new ConfigFaultInjector(
-      new ConfigService({ SQS_PUBLISH_FAILURE_MODE: 'true' }),
-    );
-
-    expect(() => injector.beforeOperation('receipt-publish')).toThrow(
-      'Injected receipt command publish failure',
-    );
-  });
-
   it('does not fail unrelated operations', () => {
-    const injector = new ConfigFaultInjector(
-      new ConfigService({ SQS_PUBLISH_FAILURE_MODE: 'true' }),
-    );
+    const injector = new ConfigFaultInjector(new ConfigService());
 
-    expect(() => injector.beforeOperation('ledger-call')).not.toThrow();
+    expect(() => injector.beforeOperation('event-publish')).not.toThrow();
   });
 });

@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: belo
-  labels:
-    app.kubernetes.io/name: belo
-    app.kubernetes.io/part-of: belo
-    istio-injection: enabled

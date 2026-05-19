@@ -3,56 +3,11 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Pool } from 'pg';
 
-export const LEDGER_READINESS_PROBE = Symbol('LEDGER_READINESS_PROBE');
 export const DB_READINESS_PROBE = Symbol('DB_READINESS_PROBE');
 export const SQS_READINESS_PROBE = Symbol('SQS_READINESS_PROBE');
 
 export interface ReadinessProbe {
   isReady(): Promise<boolean>;
-}
-
-@Injectable()
-export class HttpLedgerReadinessProbe implements ReadinessProbe {
-  constructor(private readonly config: ConfigService) {}
-
-  async isReady(): Promise<boolean> {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      this.timeoutMilliseconds(),
-    );
-
-    try {
-      const response = await fetch(`${this.baseUrl()}/readyz`, {
-        method: 'GET',
-        signal: controller.signal,
-      });
-
-      return response.ok;
-    } catch {
-      return false;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private baseUrl(): string {
-    return this.config
-      .get<string>('LEDGER_BASE_URL', 'http://localhost:3001')
-      .replace(/\/$/, '');
-  }
-
-  private timeoutMilliseconds(): number {
-    const value = Number(
-      this.config.get<string>('READY_CHECK_TIMEOUT_MS', '300'),
-    );
-
-    if (!Number.isFinite(value) || value < 1) {
-      return 300;
-    }
-
-    return value;
-  }
 }
 
 @Injectable()

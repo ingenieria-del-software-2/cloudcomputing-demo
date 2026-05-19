@@ -18,10 +18,8 @@ type OrderStatus =
   | 'replayed'
   | 'invalid'
   | 'idempotency_conflict'
-  | 'ledger_failed'
   | 'queue_failed'
   | 'injected_failure';
-type LedgerStatus = 'attempt' | 'success' | 'failure';
 type SqsStatus = 'success' | 'failure';
 
 @Injectable()
@@ -33,7 +31,6 @@ export class MetricsService {
   private readonly orders: Counter<string>;
   private readonly duplicateOrderAttempts: Counter<string>;
   private readonly orderConfirmationWithin5s: Gauge<string>;
-  private readonly ledgerRequests: Counter<string>;
   private readonly sqsPublish: Counter<string>;
   private readonly eventBacklogDepth: Gauge<string>;
   private readonly eventDlqDepth: Gauge<string>;
@@ -78,12 +75,6 @@ export class MetricsService {
       name: 'order_confirmation_within_5s_ratio',
       help: 'Ratio of valid approved payments confirmed as orders within 5 seconds',
       labelNames: ['service', 'version'],
-      registers: [this.registry],
-    });
-    this.ledgerRequests = new Counter({
-      name: 'ledger_client_requests_total',
-      help: 'Total ledger client requests',
-      labelNames: ['service', 'status', 'version'],
       registers: [this.registry],
     });
     this.sqsPublish = new Counter({
@@ -157,10 +148,6 @@ export class MetricsService {
 
   recordTransaction(status: OrderStatus, version: string): void {
     this.recordOrder(status, version);
-  }
-
-  recordLedgerRequest(status: LedgerStatus, version: string): void {
-    this.ledgerRequests.inc({ service: this.serviceName, status, version });
   }
 
   recordSqsPublish(

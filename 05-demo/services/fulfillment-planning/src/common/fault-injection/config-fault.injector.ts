@@ -48,15 +48,7 @@ export class ConfigFaultInjector implements FaultInjector {
   }
 
   beforeOperation(operation: string): void {
-    if (
-      operation === 'receipt-publish' &&
-      this.config.get<string>('SQS_PUBLISH_FAILURE_MODE') === 'true'
-    ) {
-      throw new InjectedFaultError(
-        503,
-        'Injected receipt command publish failure',
-      );
-    }
+    void operation;
   }
 
   private injectRateLimit(): void {

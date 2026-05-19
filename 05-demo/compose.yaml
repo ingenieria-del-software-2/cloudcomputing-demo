@@ -1,4 +1,4 @@
-name: belo
+name: fiuba
 
 x-aws-local: &aws-local
   AWS_REGION: us-east-1
@@ -49,20 +49,6 @@ services:
       - >-
         until curl -fsS http://ministack:4566/_ministack/health >/dev/null;
         do sleep 1; done
-
-  receipt-queue:
-    <<: *curl-one-shot
-    depends_on:
-      ministack-ready:
-        condition: service_completed_successfully
-    command:
-      - /bin/sh
-      - -ec
-      - >-
-        curl -fsS -X POST http://ministack:4566/
-        -H 'Content-Type: application/x-www-form-urlencoded'
-        --data 'Action=CreateQueue&QueueName=receipt-commands&Version=2012-11-05'
-        >/dev/null
 
   orders-confirmed-queue:
     <<: *curl-one-shot
@@ -256,63 +242,6 @@ services:
       retries: 30
       start_period: 5s
 
-  ledger-service:
-    image: ledger-service:local
-    build:
-      context: .
-      dockerfile: build/docker/ledger-service.Dockerfile
-    environment:
-      <<: *service-meta
-      HOST: 0.0.0.0
-      PORT: "3001"
-      SERVICE_VERSION: stable
-    ports:
-      - name: ledger
-        target: 3001
-        published: "${LEDGER_PORT:-3001}"
-        protocol: tcp
-        app_protocol: http
-
-  ledger-ready:
-    <<: *curl-one-shot
-    depends_on:
-      ledger-service:
-        condition: service_started
-    command:
-      - /bin/sh
-      - -ec
-      - >-
-        until curl -fsS http://ledger-service:3001/readyz >/dev/null;
-        do sleep 1; done
-
-  transaction-api:
-    image: transaction-api:local
-    build:
-      context: .
-      dockerfile: build/docker/transaction-api.Dockerfile
-    depends_on:
-      ledger-ready:
-        condition: service_completed_successfully
-      receipt-queue:
-        condition: service_completed_successfully
-    environment:
-      <<: [*aws-local, *service-meta]
-      NODE_ENV: production
-      PORT: "3000"
-      SERVICE_VERSION: v1
-      LEDGER_BASE_URL: http://ledger-service:3001
-      SQS_QUEUE_URL: http://ministack:4566/000000000000/receipt-commands
-      SQS_PUBLISH_MAX_ATTEMPTS: "2"
-      SQS_PUBLISH_RETRY_DELAY_MS: "0"
-      READY_CHECK_TIMEOUT_MS: "500"
-    ports:
-      - name: http
-        target: 3000
-        published: "${TRANSACTION_API_PORT:-3000}"
-        protocol: tcp
-        app_protocol: http
-    healthcheck: *node-healthcheck
-
   order-management:
     image: order-management:local
     build:
@@ -467,35 +396,11 @@ services:
         app_protocol: http
     healthcheck: *node-healthcheck
 
-  receipt-worker:
-    image: receipt-worker:local
-    build:
-      context: .
-      dockerfile: build/docker/receipt-worker.Dockerfile
-    depends_on:
-      receipt-queue:
-        condition: service_completed_successfully
-    environment:
-      <<: [*aws-local, *service-meta]
-      NODE_ENV: production
-      PORT: "3002"
-      SERVICE_VERSION: stable
-      SQS_QUEUE_URL: http://ministack:4566/000000000000/receipt-commands
-    ports:
-      - name: worker-http
-        target: 3002
-        published: "${RECEIPT_WORKER_PORT:-3002}"
-        protocol: tcp
-        app_protocol: http
-    healthcheck: *node-healthcheck
-
   prometheus:
     image: prom/prometheus:v3.7.3
     profiles:
       - metrics
     depends_on:
-      transaction-api:
-        condition: service_healthy
       order-management:
         condition: service_healthy
       fulfillment-planning:
@@ -529,10 +434,6 @@ configs:
         scrape_interval: 1s
 
       scrape_configs:
-        - job_name: transaction-api
-          static_configs:
-            - targets:
-                - transaction-api:3000
         - job_name: order-management
           static_configs:
             - targets:
