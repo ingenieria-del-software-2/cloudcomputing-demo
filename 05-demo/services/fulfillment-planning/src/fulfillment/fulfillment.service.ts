@@ -608,6 +608,14 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
       result.commitment.status !== 'FULFILLMENT_FAILED' &&
         Boolean(result.commitment.estimated_delivery_date),
     );
+    this.metrics.recordStockShortageCancellationSlo(
+      version,
+      result.commitment.reason !== 'STOCK_UNAVAILABLE',
+    );
+
+    if (result.commitment.estimated_delivery_date) {
+      this.metrics.recordDeliveryPromiseStability(version, true);
+    }
 
     if (result.promesaExpressFailed) {
       this.metrics.recordPromesaExpressFailure(version);

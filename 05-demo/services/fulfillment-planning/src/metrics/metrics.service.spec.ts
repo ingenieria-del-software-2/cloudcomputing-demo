@@ -62,6 +62,22 @@ describe('MetricsService', () => {
     );
   });
 
+  it('records stock shortage and promise stability SLO ratios', async () => {
+    service.recordStockShortageCancellationSlo('v1', true);
+    service.recordStockShortageCancellationSlo('v1', false);
+    service.recordDeliveryPromiseStability('v1', true);
+    service.recordDeliveryPromiseStability('v1', true);
+
+    const metrics = await service.render();
+
+    expect(metrics).toContain(
+      'confirmed_orders_without_stock_shortage_cancellation_ratio{service="fulfillment-planning",version="v1"} 0.5',
+    );
+    expect(metrics).toContain(
+      'delivery_promise_stability_ratio{service="fulfillment-planning",version="v1"} 1',
+    );
+  });
+
   it('records HTTP request duration buckets', async () => {
     service.recordHttpRequest({
       route: '/internal/events',

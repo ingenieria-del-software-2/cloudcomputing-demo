@@ -60,7 +60,7 @@ export class ShipmentController {
 
     const documents =
       await this.shipments.findDocumentsByShipmentId(shipmentId);
-    this.shipments.recordDocumentAccess(documents);
+    this.shipments.recordDocumentAccess(shipmentId, documents);
 
     return {
       shipment_id: shipmentId,

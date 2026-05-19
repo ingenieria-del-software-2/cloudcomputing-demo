@@ -9,6 +9,7 @@ import {
 
 export const TRACKING_EVENT_NAMES = [
   'orders.order_confirmed.v1',
+  'orders.order_cancellation_requested.v1',
   'orders.order_cancelled.v1',
   'fulfillment.commitment_confirmed.v1',
   'fulfillment.commitment_failed.v1',

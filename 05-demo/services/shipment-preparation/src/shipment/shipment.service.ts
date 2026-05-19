@@ -161,6 +161,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private stopping = false;
   private workers: Promise<void>[] = [];
   private readonly transientFailuresByKey = new Map<string, number>();
+  private readonly documentAccessRecorded = new Set<string>();
   private outboxTimer?: NodeJS.Timeout;
   private publishingOutbox = false;
 
@@ -275,7 +276,15 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  recordDocumentAccess(documents: DispatchDocumentRecord[]): void {
+  recordDocumentAccess(
+    shipmentId: string,
+    documents: DispatchDocumentRecord[],
+  ): void {
+    if (this.documentAccessRecorded.has(shipmentId)) {
+      return;
+    }
+
+    this.documentAccessRecorded.add(shipmentId);
     const version = this.config.get<string>('SERVICE_VERSION', 'v1');
     this.metrics.recordDocumentAvailabilityOnAccess(
       version,

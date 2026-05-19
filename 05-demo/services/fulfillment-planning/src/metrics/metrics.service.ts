@@ -25,6 +25,8 @@ export class MetricsService {
   private readonly commitments: Counter<string>;
   private readonly commitmentDuration: Histogram<string>;
   private readonly deliveryPromiseWithin15s: Gauge<string>;
+  private readonly confirmedOrdersWithoutStockShortageCancellation: Gauge<string>;
+  private readonly deliveryPromiseStability: Gauge<string>;
   private readonly sqsPublish: Counter<string>;
   private readonly eventBacklogDepth: Gauge<string>;
   private readonly eventDlqDepth: Gauge<string>;
@@ -32,6 +34,10 @@ export class MetricsService {
   private readonly buildInfo: Gauge<string>;
   private deliveryPromiseEligible = 0;
   private deliveryPromiseGood = 0;
+  private stockShortageCancellationEligible = 0;
+  private stockShortageCancellationGood = 0;
+  private deliveryPromiseStabilityEligible = 0;
+  private deliveryPromiseStabilityGood = 0;
 
   constructor(private readonly config: ConfigService = new ConfigService()) {
     collectDefaultMetrics({
@@ -70,6 +76,18 @@ export class MetricsService {
     this.deliveryPromiseWithin15s = new Gauge({
       name: 'delivery_promise_created_within_15s_ratio',
       help: 'Ratio of confirmed orders receiving a delivery promise within 15 seconds',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
+    this.confirmedOrdersWithoutStockShortageCancellation = new Gauge({
+      name: 'confirmed_orders_without_stock_shortage_cancellation_ratio',
+      help: 'Ratio of confirmed orders that did not fail fulfillment because of stock shortage',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
+    this.deliveryPromiseStability = new Gauge({
+      name: 'delivery_promise_stability_ratio',
+      help: 'Source-side ratio of created delivery promises that remain stable in fulfillment-planning',
       labelNames: ['service', 'version'],
       registers: [this.registry],
     });
@@ -156,6 +174,36 @@ export class MetricsService {
     this.deliveryPromiseWithin15s.set(
       { service: this.serviceName, version },
       this.deliveryPromiseGood / this.deliveryPromiseEligible,
+    );
+  }
+
+  recordStockShortageCancellationSlo(
+    version: string,
+    avoidedStockShortageCancellation: boolean,
+  ): void {
+    this.stockShortageCancellationEligible += 1;
+
+    if (avoidedStockShortageCancellation) {
+      this.stockShortageCancellationGood += 1;
+    }
+
+    this.confirmedOrdersWithoutStockShortageCancellation.set(
+      { service: this.serviceName, version },
+      this.stockShortageCancellationGood /
+        this.stockShortageCancellationEligible,
+    );
+  }
+
+  recordDeliveryPromiseStability(version: string, stable: boolean): void {
+    this.deliveryPromiseStabilityEligible += 1;
+
+    if (stable) {
+      this.deliveryPromiseStabilityGood += 1;
+    }
+
+    this.deliveryPromiseStability.set(
+      { service: this.serviceName, version },
+      this.deliveryPromiseStabilityGood / this.deliveryPromiseStabilityEligible,
     );
   }
 

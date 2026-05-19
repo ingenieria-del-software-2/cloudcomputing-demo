@@ -39,6 +39,7 @@ type TrackingRecordResponse = {
   estimated_delivery_date?: string;
   timeline: Array<{
     status: VisibleStatus;
+    message: string;
     event_name: string;
     correlation_id: string;
     reason?: string;
@@ -222,6 +223,11 @@ describe('buyer-order-tracking ATDD', () => {
       'FULFILLMENT_COMMITTED',
       'READY_TO_DISPATCH',
     ]);
+    expect(body.timeline.map((entry) => entry.message)).toEqual([
+      'Tu compra fue confirmada.',
+      'Estamos preparando tu compra.',
+      'Tu compra esta lista para despacho.',
+    ]);
     expect(
       body.timeline.every(
         (entry) => entry.correlation_id === `checkout_${orderId}`,
@@ -321,7 +327,31 @@ describe('buyer-order-tracking ATDD', () => {
     expect(body.visible_status).toBe('CANCELLED');
     expect(body.timeline.at(-1)).toMatchObject({
       status: 'CANCELLED',
+      message: 'Tu compra no pudo avanzar: STOCK_UNAVAILABLE.',
       reason: 'STOCK_UNAVAILABLE',
+    });
+  });
+
+  it('accepts the cancellation_requested event variant from the saga contract', async () => {
+    const orderId = `ord_track_cancel_requested_${Date.now()}`;
+    const buyerId = `buyer_cancel_requested_${Date.now()}`;
+
+    await postEvent(orderConfirmedEvent(orderId, buyerId)).expect(202);
+    await receiveTrackingUpdate(orderId, 'ORDER_CONFIRMED');
+    await postEvent(orderCancellationRequestedEvent(orderId, buyerId)).expect(
+      202,
+    );
+    await receiveTrackingUpdate(orderId, 'CANCELLED');
+
+    const tracking = await http()
+      .get(`/orders/${orderId}/tracking`)
+      .expect(200);
+    const body = tracking.body as TrackingRecordResponse;
+    expect(body.visible_status).toBe('CANCELLED');
+    expect(body.timeline.at(-1)).toMatchObject({
+      event_name: 'orders.order_cancellation_requested.v1',
+      status: 'CANCELLED',
+      message: 'Tu compra no pudo avanzar: STOCK_UNAVAILABLE.',
     });
   });
 
@@ -618,6 +648,33 @@ function orderCancelledEvent(
       reason: 'STOCK_UNAVAILABLE',
       payment_approved_at: new Date(Date.now() - 1000).toISOString(),
       cancelled_at: occurredAt,
+    },
+  };
+}
+
+function orderCancellationRequestedEvent(
+  orderId: string,
+  buyerId: string,
+): TrackingEventDto {
+  const occurredAt = new Date(Date.now() + 1000).toISOString();
+
+  return {
+    event_id: newId('evt'),
+    event_name: 'orders.order_cancellation_requested.v1',
+    event_version: '1.0',
+    occurred_at: occurredAt,
+    producer: 'order-management',
+    correlation_id: `checkout_${orderId}`,
+    causation_id: `evt_fulfillment_failed_${orderId}`,
+    idempotency_key: `order_id:${orderId}:cancellation-request`,
+    payload: {
+      order_id: orderId,
+      payment_id: `pay_${orderId}`,
+      buyer_id: buyerId,
+      seller_id: 'seller_445566',
+      reason: 'STOCK_UNAVAILABLE',
+      payment_approved_at: new Date(Date.now() - 1000).toISOString(),
+      cancellation_requested_at: occurredAt,
     },
   };
 }

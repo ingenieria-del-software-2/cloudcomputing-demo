@@ -47,6 +47,7 @@ describe('MetricsService', () => {
   it('records shipment SLO gauges', async () => {
     service.recordReadyBeforeCutoff('v1', true);
     service.recordDocumentAvailabilityOnAccess('v1', false);
+    service.recordDocumentAvailabilityOnAccess('v1', true);
 
     const metrics = await service.render();
 
@@ -54,7 +55,7 @@ describe('MetricsService', () => {
       'ready_to_dispatch_before_seller_cutoff_ratio{service="shipment-preparation",version="v1"} 1',
     );
     expect(metrics).toContain(
-      'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 0',
+      'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 0.5',
     );
   });
 

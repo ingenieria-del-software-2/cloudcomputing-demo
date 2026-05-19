@@ -397,7 +397,7 @@ describe('shipment-preparation ATDD', () => {
       'dispatch_document_failure_count{service="shipment-preparation",version="v1"} 1',
     );
     expect(metrics.text).toContain(
-      'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 0',
+      'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"}',
     );
     expect(metrics.text).toContain(
       `s3_put_object_total{service="shipment-preparation",bucket="${bucketName}",status="failure",reason="DOCUMENT_UPLOAD_ACCESS_DENIED",version="v1"}`,

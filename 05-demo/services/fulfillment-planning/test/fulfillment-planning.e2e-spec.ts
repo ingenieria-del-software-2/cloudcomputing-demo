@@ -221,6 +221,12 @@ describe('fulfillment-planning ATDD', () => {
     expect(metrics.text).toContain(
       'delivery_promise_created_within_15s_ratio{service="fulfillment-planning",version="v1"} 1',
     );
+    expect(metrics.text).toContain(
+      'confirmed_orders_without_stock_shortage_cancellation_ratio{service="fulfillment-planning",version="v1"} 1',
+    );
+    expect(metrics.text).toContain(
+      'delivery_promise_stability_ratio{service="fulfillment-planning",version="v1"} 1',
+    );
   });
 
   it('ignores duplicate order_confirmed events without reserving stock twice', async () => {

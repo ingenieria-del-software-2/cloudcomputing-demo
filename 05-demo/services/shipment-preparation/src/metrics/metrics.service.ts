@@ -33,6 +33,8 @@ export class MetricsService {
   private readonly eventBacklogDepth: Gauge<string>;
   private readonly eventDlqDepth: Gauge<string>;
   private readonly buildInfo: Gauge<string>;
+  private documentAvailabilityEligible = 0;
+  private documentAvailabilityGood = 0;
 
   constructor(private readonly config: ConfigService = new ConfigService()) {
     collectDefaultMetrics({
@@ -88,7 +90,7 @@ export class MetricsService {
     });
     this.documentAvailabilityOnAccess = new Gauge({
       name: 'dispatch_document_availability_on_first_access_ratio',
-      help: 'Whether dispatch documents were available when accessed',
+      help: 'Ratio of shipments whose dispatch documents were available on first access',
       labelNames: ['service', 'version'],
       registers: [this.registry],
     });
@@ -176,9 +178,15 @@ export class MetricsService {
     version: string,
     availableOnAccess: boolean,
   ): void {
+    this.documentAvailabilityEligible += 1;
+
+    if (availableOnAccess) {
+      this.documentAvailabilityGood += 1;
+    }
+
     this.documentAvailabilityOnAccess.set(
       { service: this.serviceName, version },
-      availableOnAccess ? 1 : 0,
+      this.documentAvailabilityGood / this.documentAvailabilityEligible,
     );
   }
 

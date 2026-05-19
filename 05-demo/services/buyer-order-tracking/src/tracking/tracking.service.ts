@@ -73,6 +73,7 @@ interface HandleTrackingEventCommand {
 
 export interface TimelineEntry {
   status: VisibleStatus;
+  message: string;
   event_id: string;
   event_name: TrackingEventName;
   correlation_id: string;
@@ -448,6 +449,7 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
         order_id: record.order_id,
         buyer_id: record.buyer_id,
         visible_status: record.visible_status,
+        message: messageForStatus(record.visible_status),
         last_event_name: record.last_event_name,
         estimated_delivery_date: record.estimated_delivery_date,
         updated_at: record.updated_at,
@@ -959,6 +961,7 @@ function appendTimelineEntry(
     ...timeline,
     {
       status: statusForEvent(event.event_name),
+      message: messageForEvent(event),
       event_id: event.event_id,
       event_name: event.event_name,
       correlation_id: event.correlation_id,
@@ -978,6 +981,7 @@ function statusForEvent(eventName: TrackingEventName): VisibleStatus {
   switch (eventName) {
     case 'orders.order_confirmed.v1':
       return 'ORDER_CONFIRMED';
+    case 'orders.order_cancellation_requested.v1':
     case 'orders.order_cancelled.v1':
       return 'CANCELLED';
     case 'fulfillment.commitment_confirmed.v1':
@@ -1089,9 +1093,46 @@ function eventOccurredAt(event: TrackingEventDto): string {
     stringValue(event.payload.at_risk_at) ??
     stringValue(event.payload.ready_to_dispatch_at) ??
     stringValue(event.payload.blocked_at) ??
+    stringValue(event.payload.cancellation_requested_at) ??
+    stringValue(event.payload.requested_at) ??
     stringValue(event.payload.cancelled_at) ??
     event.occurred_at
   );
+}
+
+function messageForEvent(event: TrackingEventDto): string {
+  if (event.event_name === 'shipping.dispatch_blocked.v1') {
+    return `Tu compra requiere revision operativa: ${stringValue(event.payload.reason) ?? 'despacho bloqueado'}.`;
+  }
+
+  if (
+    event.event_name === 'orders.order_cancelled.v1' ||
+    event.event_name === 'orders.order_cancellation_requested.v1' ||
+    event.event_name === 'fulfillment.commitment_failed.v1'
+  ) {
+    return `Tu compra no pudo avanzar: ${stringValue(event.payload.reason) ?? 'cancelacion solicitada'}.`;
+  }
+
+  return messageForStatus(statusForEvent(event.event_name));
+}
+
+function messageForStatus(status: VisibleStatus): string {
+  switch (status) {
+    case 'ORDER_CONFIRMED':
+      return 'Tu compra fue confirmada.';
+    case 'FULFILLMENT_IN_PROGRESS':
+      return 'Estamos preparando tu compra.';
+    case 'FULFILLMENT_COMMITTED':
+      return 'Estamos preparando tu compra.';
+    case 'FULFILLMENT_AT_RISK':
+      return 'Tu compra sigue en preparacion, con posible demora.';
+    case 'READY_TO_DISPATCH':
+      return 'Tu compra esta lista para despacho.';
+    case 'DISPATCH_BLOCKED':
+      return 'Tu compra requiere revision antes del despacho.';
+    case 'CANCELLED':
+      return 'Tu compra fue cancelada.';
+  }
 }
 
 function journeyStartedAtForEvent(event: TrackingEventDto): string | undefined {
@@ -1203,6 +1244,9 @@ function toTimelineEntry(value: unknown): TimelineEntry {
 
   return {
     status: visibleStatusValue(entry.status),
+    message:
+      stringValue(entry.message) ??
+      messageForStatus(visibleStatusValue(entry.status)),
     event_id: stringValue(entry.event_id) ?? '',
     event_name: trackingEventNameValue(entry.event_name),
     correlation_id: stringValue(entry.correlation_id) ?? '',
@@ -1245,6 +1289,7 @@ function eventPriority(eventName: string): number {
   switch (eventName) {
     case 'shipping.dispatch_blocked.v1':
     case 'shipping.shipment_ready_to_dispatch.v1':
+    case 'orders.order_cancellation_requested.v1':
     case 'orders.order_cancelled.v1':
     case 'fulfillment.commitment_failed.v1':
       return 100;
