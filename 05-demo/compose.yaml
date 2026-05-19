@@ -104,6 +104,38 @@ services:
         --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:fulfillment-commitment-dlq","maxReceiveCount":"3"}'
         >/dev/null
 
+  buyer-tracking-queue:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=buyer-tracking-events-dlq&Version=2012-11-05'
+        >/dev/null;
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=buyer-tracking-events&Version=2012-11-05'
+        --data 'Attribute.1.Name=RedrivePolicy'
+        --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:buyer-tracking-events-dlq","maxReceiveCount":"3"}'
+        >/dev/null
+
+  shipment-documents-bucket:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X PUT http://ministack:4566/seller-dispatch-documents-lab
+        >/dev/null
+
   order-postgres:
     image: postgres:16-alpine
     environment:
@@ -139,6 +171,26 @@ services:
       test:
         - CMD-SHELL
         - pg_isready -U fulfillment -d fulfillment_planning
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  shipment-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shipment_preparation
+      POSTGRES_USER: shipment
+      POSTGRES_PASSWORD: shipment
+    ports:
+      - name: shipment-postgres
+        target: 5432
+        published: "${SHIPMENT_POSTGRES_PORT:-15434}"
+        protocol: tcp
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U shipment -d shipment_preparation
       interval: 5s
       timeout: 3s
       retries: 30
@@ -261,6 +313,40 @@ services:
         app_protocol: http
     healthcheck: *node-healthcheck
 
+  shipment-preparation:
+    image: shipment-preparation:local
+    build:
+      context: .
+      dockerfile: build/docker/shipment-preparation.Dockerfile
+    depends_on:
+      fulfillment-commitment-queue:
+        condition: service_completed_successfully
+      buyer-tracking-queue:
+        condition: service_completed_successfully
+      shipment-documents-bucket:
+        condition: service_completed_successfully
+      shipment-postgres:
+        condition: service_healthy
+    environment:
+      <<: [*aws-local, *service-meta]
+      NODE_ENV: production
+      PORT: "3000"
+      SERVICE_VERSION: v1
+      DATABASE_URL: postgresql://shipment:shipment@shipment-postgres:5432/shipment_preparation
+      INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-commitment-intake
+      SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
+      SHIPMENT_DOCUMENTS_BUCKET: seller-dispatch-documents-lab
+      S3_PUT_OBJECT_ALLOWED: "true"
+      WORKER_CONCURRENCY: "1"
+      READY_CHECK_TIMEOUT_MS: "500"
+    ports:
+      - name: shipment-http
+        target: 3000
+        published: "${SHIPMENT_PREPARATION_PORT:-3030}"
+        protocol: tcp
+        app_protocol: http
+    healthcheck: *node-healthcheck
+
   receipt-worker:
     image: receipt-worker:local
     build:
@@ -293,6 +379,8 @@ services:
       order-management:
         condition: service_healthy
       fulfillment-planning:
+        condition: service_healthy
+      shipment-preparation:
         condition: service_healthy
     configs:
       - source: prometheus-config
@@ -331,3 +419,7 @@ configs:
           static_configs:
             - targets:
                 - fulfillment-planning:3000
+        - job_name: shipment-preparation
+          static_configs:
+            - targets:
+                - shipment-preparation:3000
