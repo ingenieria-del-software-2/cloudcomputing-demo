@@ -14,6 +14,7 @@ type ShipmentStatus =
   | 'duplicate_event_ignored'
   | 'processing_failed';
 type SqsStatus = 'success' | 'failure';
+type S3Status = 'success' | 'failure';
 
 @Injectable()
 export class MetricsService {
@@ -27,7 +28,10 @@ export class MetricsService {
   private readonly dispatchDocumentFailureCount: Counter<string>;
   private readonly readyBeforeCutoff: Gauge<string>;
   private readonly documentAvailabilityOnAccess: Gauge<string>;
+  private readonly s3PutObject: Counter<string>;
   private readonly sqsPublish: Counter<string>;
+  private readonly eventBacklogDepth: Gauge<string>;
+  private readonly eventDlqDepth: Gauge<string>;
   private readonly buildInfo: Gauge<string>;
 
   constructor(private readonly config: ConfigService = new ConfigService()) {
@@ -88,10 +92,28 @@ export class MetricsService {
       labelNames: ['service', 'version'],
       registers: [this.registry],
     });
+    this.s3PutObject = new Counter({
+      name: 's3_put_object_total',
+      help: 'Total local S3 PutObject outcomes for shipment documents',
+      labelNames: ['service', 'bucket', 'status', 'reason', 'version'],
+      registers: [this.registry],
+    });
     this.sqsPublish = new Counter({
       name: 'sqs_publish_total',
       help: 'Total SQS publish attempts',
       labelNames: ['service', 'queue', 'status', 'version'],
+      registers: [this.registry],
+    });
+    this.eventBacklogDepth = new Gauge({
+      name: 'event_backlog_depth',
+      help: 'Approximate number of events waiting in the service queue or outbox',
+      labelNames: ['service', 'queue', 'version'],
+      registers: [this.registry],
+    });
+    this.eventDlqDepth = new Gauge({
+      name: 'event_dlq_depth',
+      help: 'Approximate number of events waiting in the service dead-letter queue',
+      labelNames: ['service', 'queue', 'version'],
       registers: [this.registry],
     });
     this.buildInfo = new Gauge({
@@ -160,6 +182,21 @@ export class MetricsService {
     );
   }
 
+  recordS3PutObject(labels: {
+    bucket: string;
+    status: S3Status;
+    reason: string;
+    version: string;
+  }): void {
+    this.s3PutObject.inc({
+      service: this.serviceName,
+      bucket: labels.bucket,
+      status: labels.status,
+      reason: labels.reason,
+      version: labels.version,
+    });
+  }
+
   recordSqsPublish(
     status: SqsStatus,
     version: string,
@@ -171,6 +208,20 @@ export class MetricsService {
       status,
       version,
     });
+  }
+
+  recordEventBacklogDepth(queue: string, version: string, depth: number): void {
+    this.eventBacklogDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
+  }
+
+  recordEventDlqDepth(queue: string, version: string, depth: number): void {
+    this.eventDlqDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
   }
 
   get contentType(): string {

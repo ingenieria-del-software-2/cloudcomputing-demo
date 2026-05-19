@@ -72,6 +72,30 @@ describe('MetricsService', () => {
     );
   });
 
+  it('records local S3 PutObject outcomes', async () => {
+    service.recordS3PutObject({
+      bucket: 'seller-dispatch-documents-lab',
+      status: 'success',
+      reason: 'OK',
+      version: 'v1',
+    });
+    service.recordS3PutObject({
+      bucket: 'seller-dispatch-documents-lab',
+      status: 'failure',
+      reason: 'DOCUMENT_UPLOAD_ACCESS_DENIED',
+      version: 'v1',
+    });
+
+    const metrics = await service.render();
+
+    expect(metrics).toContain(
+      's3_put_object_total{service="shipment-preparation",bucket="seller-dispatch-documents-lab",status="success",reason="OK",version="v1"} 1',
+    );
+    expect(metrics).toContain(
+      's3_put_object_total{service="shipment-preparation",bucket="seller-dispatch-documents-lab",status="failure",reason="DOCUMENT_UPLOAD_ACCESS_DENIED",version="v1"} 1',
+    );
+  });
+
   it('records shipment duration buckets', async () => {
     service.observeShipmentDuration('ready_to_dispatch', 'v1', 0.01);
 

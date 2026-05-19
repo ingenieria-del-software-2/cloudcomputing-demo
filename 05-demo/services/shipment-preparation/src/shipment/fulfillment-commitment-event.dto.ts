@@ -31,6 +31,18 @@ export class FulfillmentCommitmentPayloadDto {
   order_id!: string;
 
   @IsString()
+  @IsOptional()
+  payment_id?: string;
+
+  @IsString()
+  @IsOptional()
+  buyer_id?: string;
+
+  @IsString()
+  @IsOptional()
+  payment_approved_at?: string;
+
+  @IsString()
   @IsNotEmpty()
   fulfillment_commitment_id!: string;
 

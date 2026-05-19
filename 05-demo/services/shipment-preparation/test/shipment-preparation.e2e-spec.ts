@@ -276,6 +276,9 @@ describe('shipment-preparation ATDD', () => {
     expect(metrics.text).toContain(
       'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 1',
     );
+    expect(metrics.text).toContain(
+      `s3_put_object_total{service="shipment-preparation",bucket="${bucketName}",status="success",reason="OK",version="v1"}`,
+    );
   });
 
   it('retries transient S3 upload failures before marking a shipment ready', async () => {
@@ -395,6 +398,9 @@ describe('shipment-preparation ATDD', () => {
     );
     expect(metrics.text).toContain(
       'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 0',
+    );
+    expect(metrics.text).toContain(
+      `s3_put_object_total{service="shipment-preparation",bucket="${bucketName}",status="failure",reason="DOCUMENT_UPLOAD_ACCESS_DENIED",version="v1"}`,
     );
   });
 
@@ -721,6 +727,9 @@ function commitmentEvent(orderId: string): FulfillmentCommitmentEventDto {
     idempotency_key: `order_id:${orderId}`,
     payload: {
       order_id: orderId,
+      payment_id: `pay_${orderId}`,
+      buyer_id: 'buyer_918273',
+      payment_approved_at: occurredAt,
       fulfillment_commitment_id: `fc_${orderId}`,
       seller_id: 'seller_445566',
       fulfillment_model: 'standard',

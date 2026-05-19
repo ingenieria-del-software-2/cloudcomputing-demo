@@ -52,6 +52,9 @@ interface RetryShipmentDocumentsCommand {
 interface ShipmentEventSource {
   event_id: string;
   correlation_id: string;
+  payment_id?: string;
+  buyer_id?: string;
+  payment_approved_at?: string;
 }
 
 export interface DispatchDocumentRecord {
@@ -93,6 +96,7 @@ interface ShipmentCreateResult {
   documents: DispatchDocumentRecord[];
   duplicate: boolean;
   documentUploadFailed: boolean;
+  events?: Array<EventEnvelope<Record<string, unknown>>>;
 }
 
 interface ShipmentRetryResult {
@@ -101,6 +105,16 @@ interface ShipmentRetryResult {
   noChanges: boolean;
   documentUploadFailed: boolean;
   statusBefore: ShipmentStatus;
+  events?: Array<EventEnvelope<Record<string, unknown>>>;
+}
+
+interface OutboxRow extends QueryResultRow {
+  outbox_id: string;
+  event_name: string;
+  queue_name: string;
+  queue_url: string;
+  payload: EventEnvelope<Record<string, unknown>>;
+  attempt_count: number;
 }
 
 interface ShipmentRow extends QueryResultRow {
@@ -147,6 +161,8 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private stopping = false;
   private workers: Promise<void>[] = [];
   private readonly transientFailuresByKey = new Map<string, number>();
+  private outboxTimer?: NodeJS.Timeout;
+  private publishingOutbox = false;
 
   constructor(
     private readonly config: ConfigService,
@@ -156,11 +172,16 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     await this.ensureSchema();
+    await this.resetInterruptedOutboxRows();
+    this.startOutboxPublisher();
     this.startWorkers();
   }
 
   async onModuleDestroy(): Promise<void> {
     this.stopping = true;
+    if (this.outboxTimer) {
+      clearInterval(this.outboxTimer);
+    }
     this.sqsClient?.destroy();
     this.s3Client?.destroy();
     await Promise.allSettled(this.workers);
@@ -380,6 +401,18 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
           }),
         );
       }
+      await this.insertShipmentTransition(client, {
+        shipment,
+        statusFrom: 'FULFILLMENT_COMMITTED',
+        causationId: event.event_id,
+        changedAt: now,
+      });
+      const events = this.outcomeEvents(
+        shipment,
+        documents,
+        fulfillmentEventSource(event),
+      );
+      await this.insertOutboxEvents(client, events, now);
 
       await client.query('COMMIT');
 
@@ -388,6 +421,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         documents,
         duplicate: false,
         documentUploadFailed: !uploadSucceeded,
+        events,
       };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -485,6 +519,18 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         client,
         shipmentId,
       );
+      await this.insertShipmentTransition(client, {
+        shipment,
+        statusFrom: existing.status,
+        causationId: existing.source_event_id ?? shipmentId,
+        changedAt: now,
+      });
+      const events = this.outcomeEvents(
+        shipment,
+        updatedDocuments,
+        shipmentEventSource(shipment),
+      );
+      await this.insertOutboxEvents(client, events, now);
 
       await client.query('COMMIT');
       return {
@@ -493,6 +539,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         noChanges: false,
         documentUploadFailed: !uploadSucceeded,
         statusBefore: existing.status,
+        events,
       };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -672,6 +719,56 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     return toDocument(result.rows[0]);
   }
 
+  private async insertShipmentTransition(
+    client: PoolClient,
+    input: {
+      shipment: ShipmentRecord;
+      statusFrom: string;
+      causationId: string;
+      changedAt: string;
+    },
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO shipment_state_transitions (
+         transition_id, shipment_id, order_id, status_from, status_to,
+         causation_id, changed_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        newId('trn'),
+        input.shipment.shipment_id,
+        input.shipment.order_id,
+        input.statusFrom,
+        input.shipment.status,
+        input.causationId,
+        input.changedAt,
+      ],
+    );
+  }
+
+  private async insertOutboxEvents(
+    client: PoolClient,
+    events: Array<EventEnvelope<Record<string, unknown>>>,
+    createdAt: string,
+  ): Promise<void> {
+    for (const event of events) {
+      await client.query(
+        `INSERT INTO event_outbox (
+           outbox_id, event_id, event_name, queue_name, queue_url, payload,
+           status, attempt_count, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'PENDING', 0, $7, $7)`,
+        [
+          newId('out'),
+          event.event_id,
+          event.event_name,
+          this.outputQueueName(),
+          this.outputQueueUrl(),
+          JSON.stringify(event),
+          createdAt,
+        ],
+      );
+    }
+  }
+
   private dispatchDocuments(
     shipmentId: string,
     event: FulfillmentCommitmentEventDto,
@@ -732,6 +829,12 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     document: PlannedDocument,
   ): Promise<UploadResult> {
     if (!this.s3PutObjectAllowed()) {
+      this.metrics.recordS3PutObject({
+        bucket: document.bucket,
+        status: 'failure',
+        reason: 'DOCUMENT_UPLOAD_ACCESS_DENIED',
+        version: this.config.get<string>('SERVICE_VERSION', 'v1'),
+      });
       this.logger.error('s3_put_object_access_denied', {
         s3_bucket: document.bucket,
         s3_key: document.key,
@@ -744,6 +847,12 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!isValidDocumentKey(document.key)) {
+      this.metrics.recordS3PutObject({
+        bucket: document.bucket,
+        status: 'failure',
+        reason: 'DOCUMENT_KEY_INVALID',
+        version: this.config.get<string>('SERVICE_VERSION', 'v1'),
+      });
       this.logger.error('s3_document_key_invalid', {
         s3_bucket: document.bucket,
         s3_key: document.key,
@@ -761,9 +870,21 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         await this.putObject(document);
+        this.metrics.recordS3PutObject({
+          bucket: document.bucket,
+          status: 'success',
+          reason: 'OK',
+          version: this.config.get<string>('SERVICE_VERSION', 'v1'),
+        });
         return { ok: true };
       } catch (error) {
         lastReason = s3FailureCode(error);
+        this.metrics.recordS3PutObject({
+          bucket: document.bucket,
+          status: 'failure',
+          reason: lastReason,
+          version: this.config.get<string>('SERVICE_VERSION', 'v1'),
+        });
         this.logS3UploadFailure(
           document,
           error,
@@ -842,14 +963,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     version: string,
     startedAt: number,
   ): Promise<void> {
-    const events = this.outcomeEvents(
-      result.shipment,
-      result.documents,
-      command.event,
-    );
-    for (const event of events) {
-      await this.publish(event, version);
-    }
+    await this.publishPendingOutbox(version);
 
     const metricStatus = metricStatusFor(result.shipment.status);
     this.metrics.recordShipment(metricStatus, version);
@@ -869,8 +983,8 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.info(logEventFor(result.shipment.status), {
       request_id: command.requestId,
-      event_id: events.at(-1)?.event_id,
-      event_name: events.at(-1)?.event_name,
+      event_id: result.events?.at(-1)?.event_id,
+      event_name: result.events?.at(-1)?.event_name,
       correlation_id: command.event.correlation_id,
       order_id: result.shipment.order_id,
       shipment_id: result.shipment.shipment_id,
@@ -889,15 +1003,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     startedAt: number,
   ): Promise<void> {
     const source = shipmentEventSource(result.shipment);
-    const events = this.outcomeEvents(
-      result.shipment,
-      result.documents,
-      source,
-    );
-
-    for (const event of events) {
-      await this.publish(event, version);
-    }
+    await this.publishPendingOutbox(version);
 
     const metricStatus = metricStatusFor(result.shipment.status);
     this.metrics.recordShipment(metricStatus, version);
@@ -917,8 +1023,8 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.info('shipment_documents_retry_completed', {
       request_id: command.requestId,
-      event_id: events.at(-1)?.event_id,
-      event_name: events.at(-1)?.event_name,
+      event_id: result.events?.at(-1)?.event_id,
+      event_name: result.events?.at(-1)?.event_name,
       correlation_id: source.correlation_id,
       order_id: result.shipment.order_id,
       shipment_id: result.shipment.shipment_id,
@@ -991,9 +1097,12 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
       idempotency_key: `order_id:${shipment.order_id}:documents`,
       payload: {
         order_id: shipment.order_id,
+        payment_id: source.payment_id,
+        buyer_id: source.buyer_id,
         shipment_id: shipment.shipment_id,
         seller_id: shipment.seller_id,
         documents: documents.map(eventDocument),
+        payment_approved_at: source.payment_approved_at,
         available_at: occurredAt,
       },
     };
@@ -1017,11 +1126,14 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
       idempotency_key: `order_id:${shipment.order_id}`,
       payload: {
         order_id: shipment.order_id,
+        payment_id: source.payment_id,
+        buyer_id: source.buyer_id,
         shipment_id: shipment.shipment_id,
         seller_id: shipment.seller_id,
         label_status: 'AVAILABLE',
         documents: documents.map(eventDocument),
         seller_cutoff_at: shipment.seller_cutoff_at,
+        payment_approved_at: source.payment_approved_at,
         ready_to_dispatch_at: shipment.ready_to_dispatch_at ?? occurredAt,
       },
     };
@@ -1045,11 +1157,14 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
       idempotency_key: `order_id:${shipment.order_id}`,
       payload: {
         order_id: shipment.order_id,
+        payment_id: source.payment_id,
+        buyer_id: source.buyer_id,
         shipment_id: shipment.shipment_id,
         seller_id: shipment.seller_id,
         reason: shipment.block_reason ?? 'DISPATCH_BLOCKED',
         documents: documents.map(eventDocument),
         seller_cutoff_at: shipment.seller_cutoff_at,
+        payment_approved_at: source.payment_approved_at,
         blocked_at: occurredAt,
       },
     };
@@ -1081,6 +1196,135 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
       });
       throw new ShipmentEventPublishError(error);
     }
+  }
+
+  private startOutboxPublisher(): void {
+    if (
+      this.config.get<string>('OUTBOX_PUBLISHER_ENABLED', 'true') === 'false'
+    ) {
+      return;
+    }
+
+    void this.publishPendingOutbox(
+      this.config.get<string>('SERVICE_VERSION', 'v1'),
+    );
+    this.outboxTimer = setInterval(() => {
+      void this.publishPendingOutbox(
+        this.config.get<string>('SERVICE_VERSION', 'v1'),
+      );
+    }, this.outboxPollIntervalMs());
+  }
+
+  private async publishPendingOutbox(version: string): Promise<void> {
+    if (this.publishingOutbox) {
+      return;
+    }
+
+    this.publishingOutbox = true;
+    try {
+      const rows = await this.claimOutboxRows();
+
+      for (const row of rows) {
+        await this.publishOutboxRow(row, version);
+      }
+    } catch (error) {
+      this.logger.error('shipment_outbox_publish_failed', {
+        business_error_code: 'SHIPMENT_OUTBOX_FAILED',
+        result: 'SHIPMENT_OUTBOX_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+    } finally {
+      await this.recordOutboxBacklogDepth(version);
+      this.publishingOutbox = false;
+    }
+  }
+
+  private async recordOutboxBacklogDepth(version: string): Promise<void> {
+    try {
+      const result = await this.db().query<{ count: string }>(
+        `SELECT COUNT(*) AS count
+         FROM event_outbox
+         WHERE status <> 'PUBLISHED'`,
+      );
+      this.metrics.recordEventBacklogDepth(
+        'event_outbox',
+        version,
+        Number(result.rows[0]?.count ?? 0),
+      );
+    } catch {
+      // Metrics must not affect shipment processing.
+    }
+  }
+
+  private async claimOutboxRows(): Promise<OutboxRow[]> {
+    const result = await this.db().query<OutboxRow>(
+      `UPDATE event_outbox
+       SET status = 'IN_PROGRESS',
+           attempt_count = attempt_count + 1,
+           updated_at = NOW()
+       WHERE outbox_id IN (
+         SELECT outbox_id
+         FROM event_outbox
+         WHERE status = 'PENDING'
+         ORDER BY created_at ASC
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING outbox_id, event_name, queue_name, queue_url, payload, attempt_count`,
+      [this.outboxBatchSize()],
+    );
+
+    return result.rows;
+  }
+
+  private async publishOutboxRow(
+    row: OutboxRow,
+    version: string,
+  ): Promise<void> {
+    try {
+      await this.sqs().send(
+        new SendMessageCommand({
+          QueueUrl: row.queue_url,
+          MessageBody: JSON.stringify(row.payload),
+        }),
+      );
+      await this.db().query(
+        `UPDATE event_outbox
+         SET status = 'PUBLISHED', published_at = NOW(), updated_at = NOW()
+         WHERE outbox_id = $1`,
+        [row.outbox_id],
+      );
+      this.metrics.recordSqsPublish('success', version, row.queue_name);
+    } catch (error) {
+      await this.db().query(
+        `UPDATE event_outbox
+         SET status = 'PENDING', last_error = $2, updated_at = NOW()
+         WHERE outbox_id = $1`,
+        [
+          row.outbox_id,
+          error instanceof Error ? error.message : 'unknown error',
+        ],
+      );
+      this.metrics.recordSqsPublish('failure', version, row.queue_name);
+      this.logger.error('shipment_outbox_event_publish_failed', {
+        event_id: row.payload.event_id,
+        event_name: row.event_name,
+        correlation_id: row.payload.correlation_id,
+        queue: row.queue_name,
+        detail: `attempt:${row.attempt_count}`,
+        business_error_code: 'SHIPMENT_EVENT_QUEUE_FAILED',
+        result: 'SHIPMENT_EVENT_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
+  }
+
+  private async resetInterruptedOutboxRows(): Promise<void> {
+    await this.db().query(
+      `UPDATE event_outbox
+       SET status = 'PENDING', updated_at = NOW()
+       WHERE status = 'IN_PROGRESS'`,
+    );
   }
 
   private startWorkers(): void {
@@ -1200,6 +1444,37 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         created_at TIMESTAMPTZ NOT NULL,
         UNIQUE (shipment_id, document_type)
       )
+    `);
+    await this.db().query(`
+      CREATE TABLE IF NOT EXISTS shipment_state_transitions (
+        transition_id TEXT PRIMARY KEY,
+        shipment_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        status_from TEXT NOT NULL,
+        status_to TEXT NOT NULL,
+        causation_id TEXT NOT NULL,
+        changed_at TIMESTAMPTZ NOT NULL
+      )
+    `);
+    await this.db().query(`
+      CREATE TABLE IF NOT EXISTS event_outbox (
+        outbox_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        event_name TEXT NOT NULL,
+        queue_name TEXT NOT NULL,
+        queue_url TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL,
+        published_at TIMESTAMPTZ
+      )
+    `);
+    await this.db().query(`
+      CREATE INDEX IF NOT EXISTS event_outbox_pending_idx
+        ON event_outbox (status, created_at)
     `);
   }
 
@@ -1357,6 +1632,18 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 25;
   }
 
+  private outboxBatchSize(): number {
+    const value = Number(this.config.get<string>('OUTBOX_BATCH_SIZE', '10'));
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 10;
+  }
+
+  private outboxPollIntervalMs(): number {
+    const value = Number(
+      this.config.get<string>('OUTBOX_POLL_INTERVAL_MS', '1000'),
+    );
+    return Number.isFinite(value) && value >= 100 ? Math.floor(value) : 1000;
+  }
+
   private transientFailuresRemaining(key: string): number {
     if (!this.transientFailuresByKey.has(key)) {
       const configured = Number(
@@ -1444,6 +1731,18 @@ function shipmentEventSource(shipment: ShipmentRecord): ShipmentEventSource {
     event_id: shipment.source_event_id ?? `retry_${shipment.shipment_id}`,
     correlation_id:
       shipment.correlation_id ?? `shipment_retry_${shipment.shipment_id}`,
+  };
+}
+
+function fulfillmentEventSource(
+  event: FulfillmentCommitmentEventDto,
+): ShipmentEventSource {
+  return {
+    event_id: event.event_id,
+    correlation_id: event.correlation_id,
+    payment_id: stringValue(event.payload.payment_id),
+    buyer_id: stringValue(event.payload.buyer_id),
+    payment_approved_at: stringValue(event.payload.payment_approved_at),
   };
 }
 

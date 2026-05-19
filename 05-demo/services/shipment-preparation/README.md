@@ -36,3 +36,24 @@ S3_BAD_KEY_ENABLED=true                  Generates invalid S3 document keys
 S3_TRANSIENT_FAILURES_BEFORE_SUCCESS=1   Forces retryable S3 upload failures
 SELLER_CUTOFF_EXPIRED=true               Marks the shipment as blocked by cutoff
 ```
+
+## Local S3 Retry/Fix Runbook
+
+Use this when the demo simulates missing `s3:PutObject` permission with `S3_PUT_OBJECT_ALLOWED=false`.
+
+```bash
+S3_PUT_OBJECT_ALLOWED=false make compose-app-up
+curl -fsS -X POST http://localhost:3030/internal/events -H 'Content-Type: application/json' -d @commitment.json
+curl -fsS http://localhost:3030/metrics | grep 's3_put_object_total\|dispatch_document_failure_count'
+S3_PUT_OBJECT_ALLOWED=true curl -fsS -X POST http://localhost:3030/shipments/<shipment_id>/retry-documents
+curl -fsS http://localhost:3030/shipments/<shipment_id>/documents
+```
+
+Expected evidence:
+
+```text
+shipping.dispatch_blocked.v1 is emitted while writes are denied
+s3_put_object_total{status="failure",reason="DOCUMENT_UPLOAD_ACCESS_DENIED"} increases
+POST /shipments/<shipment_id>/retry-documents turns documents AVAILABLE after the fix
+shipping.dispatch_document_available.v1 and shipping.shipment_ready_to_dispatch.v1 are emitted
+```
