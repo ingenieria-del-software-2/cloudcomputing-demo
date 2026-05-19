@@ -1,0 +1,36 @@
+apiVersion: flagger.app/v1beta1
+kind: MetricTemplate
+metadata:
+  name: transaction-api-http-success-rate
+  namespace: belo
+  labels:
+    app.kubernetes.io/name: transaction-api
+    app.kubernetes.io/component: canary-gate
+    app.kubernetes.io/part-of: belo
+spec:
+  provider:
+    type: prometheus
+    address: http://kube-prometheus-stack-prometheus.monitoring:9090
+  query: |
+    (
+      100 *
+      sum(
+        increase(http_requests_total{
+          namespace="{{ namespace }}",
+          route="/transactions",
+          pod=~"transaction-api-[^-]+-[^-]+$",
+          status!~"5.."
+        }[2m])
+      )
+      /
+      clamp_min(
+        sum(
+          increase(http_requests_total{
+            namespace="{{ namespace }}",
+            route="/transactions",
+            pod=~"transaction-api-[^-]+-[^-]+$"
+          }[2m])
+        ),
+        1
+      )
+    ) or vector(0)

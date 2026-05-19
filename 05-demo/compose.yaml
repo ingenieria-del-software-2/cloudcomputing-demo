@@ -1,0 +1,181 @@
+name: belo
+
+x-aws-local: &aws-local
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://ministack:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+
+x-service-meta: &service-meta
+  GIT_COMMIT: compose
+
+x-curl-one-shot: &curl-one-shot
+  image: curlimages/curl:8.16.0
+  restart: "no"
+
+x-node-healthcheck: &node-healthcheck
+  test:
+    - CMD-SHELL
+    - >-
+      node -e "fetch('http://127.0.0.1:' + process.env.PORT + '/readyz')
+      .then(r => process.exit(r.ok ? 0 : 1))
+      .catch(() => process.exit(1))"
+  interval: 5s
+  timeout: 3s
+  retries: 30
+  start_period: 10s
+
+services:
+  ministack:
+    image: ministackorg/ministack:1.3.25
+    environment:
+      LOG_LEVEL: INFO
+      PERSIST_STATE: "0"
+    ports:
+      - name: aws
+        target: 4566
+        published: "${MINISTACK_PORT:-4566}"
+        protocol: tcp
+        app_protocol: http
+
+  ministack-ready:
+    <<: *curl-one-shot
+    depends_on:
+      ministack:
+        condition: service_started
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        until curl -fsS http://ministack:4566/_ministack/health >/dev/null;
+        do sleep 1; done
+
+  receipt-queue:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=receipt-commands&Version=2012-11-05'
+        >/dev/null
+
+  ledger-service:
+    image: ledger-service:local
+    build:
+      context: .
+      dockerfile: build/docker/ledger-service.Dockerfile
+    environment:
+      <<: *service-meta
+      HOST: 0.0.0.0
+      PORT: "3001"
+      SERVICE_VERSION: stable
+    ports:
+      - name: ledger
+        target: 3001
+        published: "${LEDGER_PORT:-3001}"
+        protocol: tcp
+        app_protocol: http
+
+  ledger-ready:
+    <<: *curl-one-shot
+    depends_on:
+      ledger-service:
+        condition: service_started
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        until curl -fsS http://ledger-service:3001/readyz >/dev/null;
+        do sleep 1; done
+
+  transaction-api:
+    image: transaction-api:local
+    build:
+      context: .
+      dockerfile: build/docker/transaction-api.Dockerfile
+    depends_on:
+      ledger-ready:
+        condition: service_completed_successfully
+      receipt-queue:
+        condition: service_completed_successfully
+    environment:
+      <<: [*aws-local, *service-meta]
+      NODE_ENV: production
+      PORT: "3000"
+      SERVICE_VERSION: v1
+      LEDGER_BASE_URL: http://ledger-service:3001
+      SQS_QUEUE_URL: http://ministack:4566/000000000000/receipt-commands
+      SQS_PUBLISH_MAX_ATTEMPTS: "2"
+      SQS_PUBLISH_RETRY_DELAY_MS: "0"
+      READY_CHECK_TIMEOUT_MS: "500"
+    ports:
+      - name: http
+        target: 3000
+        published: "${TRANSACTION_API_PORT:-3000}"
+        protocol: tcp
+        app_protocol: http
+    healthcheck: *node-healthcheck
+
+  receipt-worker:
+    image: receipt-worker:local
+    build:
+      context: .
+      dockerfile: build/docker/receipt-worker.Dockerfile
+    depends_on:
+      receipt-queue:
+        condition: service_completed_successfully
+    environment:
+      <<: [*aws-local, *service-meta]
+      NODE_ENV: production
+      PORT: "3002"
+      SERVICE_VERSION: stable
+      SQS_QUEUE_URL: http://ministack:4566/000000000000/receipt-commands
+    ports:
+      - name: worker-http
+        target: 3002
+        published: "${RECEIPT_WORKER_PORT:-3002}"
+        protocol: tcp
+        app_protocol: http
+    healthcheck: *node-healthcheck
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    profiles:
+      - metrics
+    depends_on:
+      transaction-api:
+        condition: service_healthy
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+    ports:
+      - name: prometheus
+        target: 9090
+        published: "${PROMETHEUS_PORT:-19090}"
+        protocol: tcp
+        app_protocol: http
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget --spider -q http://127.0.0.1:9090/-/ready || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+configs:
+  prometheus-config:
+    content: |
+      global:
+        scrape_interval: 1s
+
+      scrape_configs:
+        - job_name: transaction-api
+          static_configs:
+            - targets:
+                - transaction-api:3000

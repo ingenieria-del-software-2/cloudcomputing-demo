@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ministack
+  labels:
+    app.kubernetes.io/name: ministack
+    app.kubernetes.io/part-of: belo

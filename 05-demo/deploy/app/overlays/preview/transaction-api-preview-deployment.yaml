@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-api-preview
+  namespace: belo
+  labels:
+    app.kubernetes.io/name: transaction-api-preview
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: belo
+    app.kubernetes.io/version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: transaction-api-preview
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: transaction-api-preview
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: belo
+        app.kubernetes.io/version: v2
+    spec:
+      containers:
+        - name: transaction-api
+          image: transaction-api:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "3000"
+            - name: SERVICE_VERSION
+              value: v2
+            - name: GIT_COMMIT
+              value: preview
+            - name: LEDGER_BASE_URL
+              value: http://ledger-service:3001
+          envFrom:
+            - configMapRef:
+                name: sqs-config
+            - secretRef:
+                name: sqs-credentials
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop:
+                - ALL

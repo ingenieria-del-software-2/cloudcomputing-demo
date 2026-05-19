@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: receipt-worker
+  labels:
+    app.kubernetes.io/name: receipt-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: belo
+    app.kubernetes.io/version: stable
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: receipt-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: receipt-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: belo
+        app.kubernetes.io/version: stable
+    spec:
+      containers:
+        - name: receipt-worker
+          image: receipt-worker:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "3002"
+            - name: SERVICE_VERSION
+              value: stable
+            - name: GIT_COMMIT
+              value: local
+          envFrom:
+            - configMapRef:
+                name: sqs-config
+            - secretRef:
+                name: sqs-credentials
+          ports:
+            - name: http
+              containerPort: 3002
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop:
+                - ALL

@@ -1,0 +1,31 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: transaction-api-preview
+  namespace: belo
+  labels:
+    app.kubernetes.io/name: transaction-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: belo
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - transaction-api
+  http:
+    - name: preview-header-v2
+      match:
+        - headers:
+            x-release-track:
+              exact: preview
+      route:
+        - destination:
+            host: transaction-api-preview.belo.svc.cluster.local
+            port:
+              number: 3000
+    - name: stable-v1
+      route:
+        - destination:
+            host: transaction-api.belo.svc.cluster.local
+            port:
+              number: 3000

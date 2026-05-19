@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-api
+  labels:
+    app.kubernetes.io/name: transaction-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: belo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: transaction-api
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

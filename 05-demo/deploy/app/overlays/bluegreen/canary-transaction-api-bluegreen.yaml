@@ -1,0 +1,55 @@
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: transaction-api
+  namespace: belo
+  labels:
+    app.kubernetes.io/name: transaction-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: belo
+spec:
+  provider: istio
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: transaction-api
+  progressDeadlineSeconds: 240
+  revertOnDeletion: true
+  service:
+    port: 3000
+    targetPort: http
+    portName: http
+    gateways:
+      - belo/transaction-api
+    hosts:
+      - "*"
+    timeout: 5s
+  analysis:
+    interval: 30s
+    threshold: 4
+    iterations: 6
+    metrics:
+      - name: transaction-api-canary-request-rate
+        templateRef:
+          name: transaction-api-canary-request-rate
+        thresholdRange:
+          min: 1
+        interval: 30s
+      - name: transaction-api-http-success-rate
+        templateRef:
+          name: transaction-api-http-success-rate
+        thresholdRange:
+          min: 99
+        interval: 30s
+      - name: transaction-api-http-duration-p95
+        templateRef:
+          name: transaction-api-http-duration-p95
+        thresholdRange:
+          max: 0.5
+        interval: 30s
+      - name: transaction-api-sqs-publish-success-rate
+        templateRef:
+          name: transaction-api-sqs-publish-success-rate
+        thresholdRange:
+          min: 99
+        interval: 30s

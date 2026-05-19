@@ -1,0 +1,17 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: transaction-api-preview
+  namespace: belo
+  labels:
+    app.kubernetes.io/name: transaction-api-preview
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: belo
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: transaction-api-preview
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

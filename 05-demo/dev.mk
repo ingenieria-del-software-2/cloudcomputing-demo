@@ -1,0 +1,113 @@
+.PHONY: \
+	build build-ts build-ledger \
+	lint lint-ts lint-fix lint-go \
+	typecheck typecheck-ts \
+	test test-ts test-go test-integration test-e2e test-worker-e2e test-prometheus \
+	verify verify-transaction-api verify-receipt-worker verify-ledger-service \
+	docker-build compose-up compose-app-up compose-deps-up compose-metrics-up compose-down compose-reset compose-logs
+
+# --- Global & Go Targets ---
+build: build-ts build-ledger
+lint: lint-ts lint-go
+typecheck: typecheck-ts
+test: test-ts test-go
+verify: lint typecheck test test-integration test-e2e test-worker-e2e build
+
+build-ts lint-ts typecheck-ts test-ts:
+	@set -euo pipefail; \
+	for dir in $(TS_SERVICE_DIRS); do \
+		$(PNPM) --dir "$$dir" run $(subst -ts,,$@); \
+	done
+
+lint-fix:
+	@set -euo pipefail; \
+	for dir in $(TS_SERVICE_DIRS); do \
+		$(PNPM) --dir "$$dir" run lint:fix; \
+	done
+
+build-ledger:
+	@mkdir -p .bin && $(GO) build -C $(LEDGER_SERVICE_DIR) -o ../../.bin/ledger-service ./cmd/ledger-service
+
+lint-go:
+	$(DOCKER) run --rm -v "$(CURDIR)/$(LEDGER_SERVICE_DIR):/app" -w /app $(GO_LINT_IMAGE) golangci-lint run ./...
+
+test-go:
+	$(GO) test -C $(LEDGER_SERVICE_DIR) ./...
+
+verify-ledger-service: lint-go test-go build-ledger
+
+# --- TS Package Targets (Dynamic) ---
+TS_TASKS := build lint typecheck test
+$(addsuffix -transaction-api, $(TS_TASKS)):
+	$(PNPM) --dir $(TRANSACTION_API_DIR) run $(subst -transaction-api,,$@)
+
+$(addsuffix -receipt-worker, $(TS_TASKS)):
+	$(PNPM) --dir $(RECEIPT_WORKER_DIR) run $(subst -receipt-worker,,$@)
+
+verify-transaction-api: lint-transaction-api typecheck-transaction-api test-transaction-api test-integration test-e2e build-transaction-api
+verify-receipt-worker: lint-receipt-worker typecheck-receipt-worker test-receipt-worker test-worker-e2e build-receipt-worker
+
+# --- Test Environment Macros ---
+define run_test
+	@set -euo pipefail; \
+	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
+	$(COMPOSE) up -d ministack ledger-service; \
+	$(COMPOSE) run --rm receipt-queue; \
+	$(COMPOSE) run --rm ledger-ready; \
+	AWS_REGION=us-east-1 AWS_ENDPOINT_URL=$(MINISTACK_ENDPOINT) AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+	LEDGER_BASE_URL=$(LEDGER_BASE_URL) SQS_QUEUE_URL=$(SQS_QUEUE_URL) $(1)
+endef
+
+test-integration:
+	$(call run_test, $(PNPM) --dir $(TRANSACTION_API_DIR) run test:integration)
+
+test-e2e:
+	$(call run_test, $(PNPM) --dir $(TRANSACTION_API_DIR) run test:e2e)
+
+test-worker-e2e:
+	$(call run_test, $(PNPM) --dir $(RECEIPT_WORKER_DIR) run test:e2e)
+
+test-prometheus:
+	@set -euo pipefail; \
+	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
+	$(COMPOSE) --profile metrics up --wait --build prometheus; \
+	$(CURL) -fsS -X POST "$(TRANSACTION_API_URL)/transactions" \
+		-H 'Content-Type: application/json' \
+		-H 'Idempotency-Key: smoke' \
+		-d '{"amount":100,"currency":"ARS","description":"smoke"}' >/dev/null; \
+	found=0; \
+	for _ in $$(seq 1 30); do \
+		if $(CURL) -fsSG "$(PROMETHEUS_URL)/api/v1/query" --data-urlencode 'query=sqs_publish_total' | grep -q '"value"'; then \
+			found=1; \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ "$$found" -eq 0 ]; then \
+		echo "sqs_publish_total not found in Prometheus"; \
+		exit 1; \
+	fi
+
+# --- Docker & Compose ---
+docker-build-%:
+	$(DOCKER) build -f build/docker/$*.Dockerfile -t $*:local .
+
+docker-build: docker-build-transaction-api docker-build-receipt-worker docker-build-ledger-service
+
+compose-app-up:
+	$(COMPOSE) up -d --build transaction-api receipt-worker
+
+compose-deps-up compose-up:
+	$(COMPOSE) up -d ministack ledger-service
+	$(COMPOSE) run --rm receipt-queue
+	$(COMPOSE) run --rm ledger-ready
+
+compose-metrics-up:
+	$(COMPOSE) --profile metrics up --wait --build prometheus
+
+compose-down compose-reset:
+	$(COMPOSE) --profile metrics down --remove-orphans -v
+	@if [ "$@" = "compose-reset" ]; then $(MAKE) compose-deps-up; fi
+
+compose-logs:
+	$(COMPOSE) logs -f
