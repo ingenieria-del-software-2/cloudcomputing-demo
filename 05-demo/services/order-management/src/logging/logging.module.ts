@@ -12,7 +12,7 @@ import { StructuredLoggerService } from './structured-logger.service';
         base: {
           pid: process.pid,
           hostname: hostname(),
-          service: 'transaction-api',
+          service: 'order-management',
         },
         genReqId: (request: IncomingMessage, response: ServerResponse) => {
           const requestId =

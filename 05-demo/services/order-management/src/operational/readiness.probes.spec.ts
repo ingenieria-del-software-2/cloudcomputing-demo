@@ -58,7 +58,8 @@ describe('SqsReadinessProbe', () => {
       .mockReturnValueOnce(Promise.resolve({}) as never);
     const probe = new SqsReadinessProbe(
       new ConfigService({
-        SQS_QUEUE_URL: 'http://localhost:4566/000000000000/receipt-commands',
+        SQS_QUEUE_URL:
+          'http://localhost:4566/000000000000/orders-confirmed-intake',
       }),
     );
 
@@ -66,7 +67,7 @@ describe('SqsReadinessProbe', () => {
     expect(send.mock.calls).toHaveLength(1);
     expect(sentCommandInput(send.mock.calls[0]?.[0])).toEqual(
       expect.objectContaining({
-        QueueUrl: 'http://localhost:4566/000000000000/receipt-commands',
+        QueueUrl: 'http://localhost:4566/000000000000/orders-confirmed-intake',
         AttributeNames: ['QueueArn'],
       }),
     );

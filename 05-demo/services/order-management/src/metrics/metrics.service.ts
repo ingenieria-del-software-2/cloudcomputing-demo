@@ -8,7 +8,9 @@ import {
   Registry,
 } from 'prom-client';
 
-type TransactionStatus =
+type OrderStatus =
+  | 'confirmed'
+  | 'duplicate_payment_ignored'
   | 'accepted'
   | 'replayed'
   | 'invalid'
@@ -21,10 +23,11 @@ type SqsStatus = 'success' | 'failure';
 
 @Injectable()
 export class MetricsService {
+  private readonly serviceName = 'order-management';
   private readonly registry = new Registry();
   private readonly httpRequests: Counter<string>;
   private readonly httpDuration: Histogram<string>;
-  private readonly transactions: Counter<string>;
+  private readonly orders: Counter<string>;
   private readonly ledgerRequests: Counter<string>;
   private readonly sqsPublish: Counter<string>;
   private readonly buildInfo: Gauge<string>;
@@ -33,7 +36,7 @@ export class MetricsService {
     collectDefaultMetrics({
       register: this.registry,
       labels: {
-        service: 'transaction-api',
+        service: this.serviceName,
       },
     });
 
@@ -50,9 +53,9 @@ export class MetricsService {
       buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
       registers: [this.registry],
     });
-    this.transactions = new Counter({
-      name: 'transactions_total',
-      help: 'Total transaction outcomes',
+    this.orders = new Counter({
+      name: 'orders_total',
+      help: 'Total order-management outcomes',
       labelNames: ['service', 'status', 'version'],
       registers: [this.registry],
     });
@@ -64,7 +67,7 @@ export class MetricsService {
     });
     this.sqsPublish = new Counter({
       name: 'sqs_publish_total',
-      help: 'Total receipt queue publish attempts',
+      help: 'Total SQS publish attempts',
       labelNames: ['service', 'queue', 'status', 'version'],
       registers: [this.registry],
     });
@@ -84,7 +87,7 @@ export class MetricsService {
     durationSeconds: number;
   }): void {
     const metricLabels = {
-      service: 'transaction-api',
+      service: this.serviceName,
       route: labels.route,
       method: labels.method,
       status: labels.status,
@@ -94,18 +97,26 @@ export class MetricsService {
     this.httpDuration.observe(metricLabels, labels.durationSeconds);
   }
 
-  recordTransaction(status: TransactionStatus, version: string): void {
-    this.transactions.inc({ service: 'transaction-api', status, version });
+  recordOrder(status: OrderStatus, version: string): void {
+    this.orders.inc({ service: this.serviceName, status, version });
+  }
+
+  recordTransaction(status: OrderStatus, version: string): void {
+    this.recordOrder(status, version);
   }
 
   recordLedgerRequest(status: LedgerStatus, version: string): void {
-    this.ledgerRequests.inc({ service: 'transaction-api', status, version });
+    this.ledgerRequests.inc({ service: this.serviceName, status, version });
   }
 
-  recordSqsPublish(status: SqsStatus, version: string): void {
+  recordSqsPublish(
+    status: SqsStatus,
+    version: string,
+    queue = this.queueName(),
+  ): void {
     this.sqsPublish.inc({
-      service: 'transaction-api',
-      queue: 'receipt-commands',
+      service: this.serviceName,
+      queue,
       status,
       version,
     });
@@ -118,7 +129,7 @@ export class MetricsService {
   render(): Promise<string> {
     this.buildInfo.set(
       {
-        service: 'transaction-api',
+        service: this.serviceName,
         version: this.config.get<string>('SERVICE_VERSION', 'v1'),
         commit: this.config.get<string>('GIT_COMMIT', 'local'),
       },
@@ -126,5 +137,14 @@ export class MetricsService {
     );
 
     return this.registry.metrics();
+  }
+
+  private queueName(): string {
+    const queueUrl = this.config.get<string>(
+      'SQS_QUEUE_URL',
+      'http://localhost:4566/000000000000/orders-confirmed-intake',
+    );
+
+    return queueUrl.split('/').pop() ?? 'orders-confirmed-intake';
   }
 }

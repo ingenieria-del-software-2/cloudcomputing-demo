@@ -10,6 +10,11 @@ export interface LogFields {
   transaction_id?: string;
   ledger_entry_id?: string;
   command_id?: string;
+  event_id?: string;
+  event_name?: string;
+  correlation_id?: string;
+  order_id?: string;
+  payment_id?: string;
   queue?: string;
   producer_version?: string;
   idempotency_key_hash?: string;

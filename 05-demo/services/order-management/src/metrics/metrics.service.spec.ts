@@ -13,21 +13,21 @@ describe('MetricsService', () => {
     );
   });
 
-  it('records transaction outcomes', async () => {
-    service.recordTransaction('accepted', 'v1');
+  it('records order outcomes', async () => {
+    service.recordOrder('confirmed', 'v1');
     service.recordTransaction('invalid', 'v1');
     service.recordTransaction('idempotency_conflict', 'v1');
 
     const metrics = await service.render();
 
     expect(metrics).toContain(
-      'transactions_total{service="transaction-api",status="accepted",version="v1"} 1',
+      'orders_total{service="order-management",status="confirmed",version="v1"} 1',
     );
     expect(metrics).toContain(
-      'transactions_total{service="transaction-api",status="invalid",version="v1"} 1',
+      'orders_total{service="order-management",status="invalid",version="v1"} 1',
     );
     expect(metrics).toContain(
-      'transactions_total{service="transaction-api",status="idempotency_conflict",version="v1"} 1',
+      'orders_total{service="order-management",status="idempotency_conflict",version="v1"} 1',
     );
   });
 
@@ -38,10 +38,10 @@ describe('MetricsService', () => {
     const metrics = await service.render();
 
     expect(metrics).toContain(
-      'sqs_publish_total{service="transaction-api",queue="receipt-commands",status="success",version="v1"} 1',
+      'sqs_publish_total{service="order-management",queue="orders-confirmed-intake",status="success",version="v1"} 1',
     );
     expect(metrics).toContain(
-      'sqs_publish_total{service="transaction-api",queue="receipt-commands",status="failure",version="v1"} 1',
+      'sqs_publish_total{service="order-management",queue="orders-confirmed-intake",status="failure",version="v1"} 1',
     );
   });
 
@@ -55,13 +55,13 @@ describe('MetricsService', () => {
     });
 
     await expect(service.render()).resolves.toContain(
-      'http_request_duration_seconds_bucket{le="0.01",service="transaction-api",route="/transactions",method="POST",status="202",version="v1"} 1',
+      'http_request_duration_seconds_bucket{le="0.01",service="order-management",route="/transactions",method="POST",status="202",version="v1"} 1',
     );
   });
 
   it('renders build info metadata', async () => {
     await expect(service.render()).resolves.toContain(
-      'build_info{service="transaction-api",version="v1",commit="test"} 1',
+      'build_info{service="order-management",version="v1",commit="test"} 1',
     );
   });
 
@@ -69,7 +69,7 @@ describe('MetricsService', () => {
     const metrics = await service.render();
 
     expect(metrics).toContain('nodejs_version_info{');
-    expect(metrics).toContain('service="transaction-api"');
+    expect(metrics).toContain('service="order-management"');
   });
 
   it('exposes the registry content type', () => {

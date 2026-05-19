@@ -1,7 +1,7 @@
 {
-  "name": "transaction-api",
+  "name": "order-management",
   "version": "0.0.1",
-  "description": "",
+  "description": "CompraFiubi order-management service",
   "author": "",
   "private": true,
   "packageManager": "pnpm@10.30.0",

@@ -2,8 +2,8 @@
 	build build-ts build-ledger \
 	lint lint-ts lint-fix lint-go \
 	typecheck typecheck-ts \
-	test test-ts test-go test-integration test-e2e test-worker-e2e test-prometheus \
-	verify verify-transaction-api verify-receipt-worker verify-ledger-service \
+	test test-ts test-go test-integration test-e2e test-worker-e2e test-order-management-e2e test-prometheus \
+	verify verify-transaction-api verify-receipt-worker verify-order-management verify-ledger-service \
 	docker-build compose-up compose-app-up compose-deps-up compose-metrics-up compose-down compose-reset compose-logs
 
 # --- Global & Go Targets ---
@@ -44,8 +44,12 @@ $(addsuffix -transaction-api, $(TS_TASKS)):
 $(addsuffix -receipt-worker, $(TS_TASKS)):
 	$(PNPM) --dir $(RECEIPT_WORKER_DIR) run $(subst -receipt-worker,,$@)
 
+$(addsuffix -order-management, $(TS_TASKS)):
+	$(PNPM) --dir $(ORDER_MANAGEMENT_DIR) run $(subst -order-management,,$@)
+
 verify-transaction-api: lint-transaction-api typecheck-transaction-api test-transaction-api test-integration test-e2e build-transaction-api
 verify-receipt-worker: lint-receipt-worker typecheck-receipt-worker test-receipt-worker test-worker-e2e build-receipt-worker
+verify-order-management: lint-order-management typecheck-order-management test-order-management test-order-management-e2e build-order-management
 
 # --- Test Environment Macros ---
 define run_test
@@ -58,6 +62,15 @@ define run_test
 	LEDGER_BASE_URL=$(LEDGER_BASE_URL) SQS_QUEUE_URL=$(SQS_QUEUE_URL) $(1)
 endef
 
+define run_order_test
+	@set -euo pipefail; \
+	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
+	$(COMPOSE) up -d ministack; \
+	$(COMPOSE) run --rm orders-confirmed-queue; \
+	AWS_REGION=us-east-1 AWS_ENDPOINT_URL=$(MINISTACK_ENDPOINT) AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+	SQS_QUEUE_URL=$(ORDERS_CONFIRMED_QUEUE_URL) $(1)
+endef
+
 test-integration:
 	$(call run_test, $(PNPM) --dir $(TRANSACTION_API_DIR) run test:integration)
 
@@ -66,6 +79,9 @@ test-e2e:
 
 test-worker-e2e:
 	$(call run_test, $(PNPM) --dir $(RECEIPT_WORKER_DIR) run test:e2e)
+
+test-order-management-e2e:
+	$(call run_order_test, $(PNPM) --dir $(ORDER_MANAGEMENT_DIR) run test:e2e)
 
 test-prometheus:
 	@set -euo pipefail; \
@@ -92,14 +108,15 @@ test-prometheus:
 docker-build-%:
 	$(DOCKER) build -f build/docker/$*.Dockerfile -t $*:local .
 
-docker-build: docker-build-transaction-api docker-build-receipt-worker docker-build-ledger-service
+docker-build: docker-build-transaction-api docker-build-receipt-worker docker-build-order-management docker-build-ledger-service
 
 compose-app-up:
-	$(COMPOSE) up -d --build transaction-api receipt-worker
+	$(COMPOSE) up -d --build transaction-api receipt-worker order-management
 
 compose-deps-up compose-up:
 	$(COMPOSE) up -d ministack ledger-service
 	$(COMPOSE) run --rm receipt-queue
+	$(COMPOSE) run --rm orders-confirmed-queue
 	$(COMPOSE) run --rm ledger-ready
 
 compose-metrics-up:

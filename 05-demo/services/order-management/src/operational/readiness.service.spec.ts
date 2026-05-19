@@ -5,12 +5,11 @@ import { ReadinessService } from './readiness.service';
 describe('ReadinessService', () => {
   it('returns ready when all dependencies are ready', async () => {
     const logger = loggerMock();
-    const service = new ReadinessService(readyProbe(), readyProbe(), logger);
+    const service = new ReadinessService(readyProbe(), logger);
 
     await expect(service.check()).resolves.toEqual({
       status: 'ready',
       dependencies: {
-        ledger_service: 'ready',
         sqs: 'ready',
       },
     });
@@ -21,19 +20,17 @@ describe('ReadinessService', () => {
     const logError = jest.fn();
     const logger = loggerMock();
     logger.error = logError;
-    const service = new ReadinessService(notReadyProbe(), readyProbe(), logger);
+    const service = new ReadinessService(notReadyProbe(), logger);
 
     await expect(service.check()).resolves.toEqual({
       status: 'not_ready',
       dependencies: {
-        ledger_service: 'not_ready',
-        sqs: 'ready',
+        sqs: 'not_ready',
       },
     });
     expect(logError).toHaveBeenCalledWith('readiness_failed', {
       status: 503,
-      ledger_service: 'not_ready',
-      sqs: 'ready',
+      sqs: 'not_ready',
     });
   });
 });

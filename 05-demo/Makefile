@@ -24,12 +24,15 @@ endif
 GO_LINT_IMAGE ?= golangci/golangci-lint:v2.12.1
 TRANSACTION_API_DIR := services/transaction-api
 RECEIPT_WORKER_DIR := services/receipt-worker
-TS_SERVICE_DIRS := $(TRANSACTION_API_DIR) $(RECEIPT_WORKER_DIR)
+ORDER_MANAGEMENT_DIR := services/order-management
+TS_SERVICE_DIRS := $(TRANSACTION_API_DIR) $(RECEIPT_WORKER_DIR) $(ORDER_MANAGEMENT_DIR)
 LEDGER_SERVICE_DIR := services/ledger-service
 LEDGER_BASE_URL ?= http://127.0.0.1:3001
 MINISTACK_ENDPOINT ?= http://localhost:4566
 SQS_QUEUE_URL ?= http://localhost:4566/000000000000/receipt-commands
+ORDERS_CONFIRMED_QUEUE_URL ?= http://localhost:4566/000000000000/orders-confirmed-intake
 TRANSACTION_API_URL ?= http://localhost:3000
+ORDER_MANAGEMENT_URL ?= http://localhost:3010
 PROMETHEUS_URL ?= http://localhost:19090
 PROMETHEUS_RELEASE ?= kube-prometheus-stack
 PROMETHEUS_NAMESPACE ?= monitoring

@@ -64,6 +64,20 @@ services:
         --data 'Action=CreateQueue&QueueName=receipt-commands&Version=2012-11-05'
         >/dev/null
 
+  orders-confirmed-queue:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=orders-confirmed-intake&Version=2012-11-05'
+        >/dev/null
+
   ledger-service:
     image: ledger-service:local
     build:
@@ -121,6 +135,30 @@ services:
         app_protocol: http
     healthcheck: *node-healthcheck
 
+  order-management:
+    image: order-management:local
+    build:
+      context: .
+      dockerfile: build/docker/order-management.Dockerfile
+    depends_on:
+      orders-confirmed-queue:
+        condition: service_completed_successfully
+    environment:
+      <<: [*aws-local, *service-meta]
+      NODE_ENV: production
+      PORT: "3000"
+      SERVICE_VERSION: v1
+      SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
+      IDEMPOTENCY_ENABLED: "true"
+      READY_CHECK_TIMEOUT_MS: "500"
+    ports:
+      - name: order-http
+        target: 3000
+        published: "${ORDER_MANAGEMENT_PORT:-3010}"
+        protocol: tcp
+        app_protocol: http
+    healthcheck: *node-healthcheck
+
   receipt-worker:
     image: receipt-worker:local
     build:
@@ -149,6 +187,8 @@ services:
       - metrics
     depends_on:
       transaction-api:
+        condition: service_healthy
+      order-management:
         condition: service_healthy
     configs:
       - source: prometheus-config
@@ -179,3 +219,7 @@ configs:
           static_configs:
             - targets:
                 - transaction-api:3000
+        - job_name: order-management
+          static_configs:
+            - targets:
+                - order-management:3000

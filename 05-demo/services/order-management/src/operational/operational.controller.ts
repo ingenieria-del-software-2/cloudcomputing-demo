@@ -17,6 +17,11 @@ export class OperationalController {
     return { status: 'ok' };
   }
 
+  @Get('health')
+  getLegacyHealth() {
+    return { status: 'ok' };
+  }
+
   @Get('readyz')
   async getReady(@Res({ passthrough: true }) response: Response) {
     const readiness = await this.readiness.check();
@@ -31,7 +36,7 @@ export class OperationalController {
   @Get('version')
   getVersion() {
     return {
-      service: 'transaction-api',
+      service: 'order-management',
       version: this.config.get<string>('SERVICE_VERSION', 'v1'),
       commit: this.config.get<string>('GIT_COMMIT', 'local'),
     };

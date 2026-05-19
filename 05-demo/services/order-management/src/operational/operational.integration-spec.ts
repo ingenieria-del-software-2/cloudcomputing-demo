@@ -25,7 +25,6 @@ describe('OperationalModule integration', () => {
       AWS_ENDPOINT_URL: 'http://localhost:4566',
       AWS_REGION: 'us-east-1',
       AWS_SECRET_ACCESS_KEY: 'test',
-      LEDGER_BASE_URL: originalEnv.LEDGER_BASE_URL ?? 'http://127.0.0.1:3001',
       READY_CHECK_TIMEOUT_MS: '500',
       SERVICE_VERSION: 'v1',
       SQS_QUEUE_URL: queueUrl,
@@ -50,20 +49,6 @@ describe('OperationalModule integration', () => {
     await expect(service.check()).resolves.toEqual({
       status: 'ready',
       dependencies: {
-        ledger_service: 'ready',
-        sqs: 'ready',
-      },
-    });
-  });
-
-  it('returns not_ready when ledger readiness fails', async () => {
-    process.env.LEDGER_BASE_URL = 'http://127.0.0.1:1';
-    await compileModule();
-
-    await expect(service.check()).resolves.toEqual({
-      status: 'not_ready',
-      dependencies: {
-        ledger_service: 'not_ready',
         sqs: 'ready',
       },
     });
@@ -76,7 +61,6 @@ describe('OperationalModule integration', () => {
     await expect(service.check()).resolves.toEqual({
       status: 'not_ready',
       dependencies: {
-        ledger_service: 'ready',
         sqs: 'not_ready',
       },
     });

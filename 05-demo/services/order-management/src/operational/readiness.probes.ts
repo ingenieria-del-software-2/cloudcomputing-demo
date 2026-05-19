@@ -88,7 +88,7 @@ export class SqsReadinessProbe implements ReadinessProbe {
   private queueUrl(): string {
     return this.config.get<string>(
       'SQS_QUEUE_URL',
-      'http://localhost:4566/000000000000/receipt-commands',
+      'http://localhost:4566/000000000000/orders-confirmed-intake',
     );
   }
 

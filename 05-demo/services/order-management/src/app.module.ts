@@ -4,7 +4,7 @@ import { LoggingModule } from './logging/logging.module';
 import { FaultInjectionModule } from './common/fault-injection/fault-injection.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { OperationalModule } from './operational/operational.module';
-import { TransactionModule } from './transaction/transaction.module';
+import { OrderModule } from './order/order.module';
 
 @Module({
   imports: [
@@ -15,7 +15,7 @@ import { TransactionModule } from './transaction/transaction.module';
     FaultInjectionModule,
     LoggingModule,
     OperationalModule,
-    TransactionModule,
+    OrderModule,
   ],
 })
 export class AppModule {}
