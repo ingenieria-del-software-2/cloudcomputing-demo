@@ -209,6 +209,56 @@ describe('order-management ATDD', () => {
     );
   });
 
+  it('creates duplicate orders when idempotency is disabled', async () => {
+    const paymentId = `pay_idempotency_off_${Date.now()}`;
+    const config = new ConfigService({
+      AWS_ACCESS_KEY_ID: 'test',
+      AWS_ENDPOINT_URL: 'http://localhost:4566',
+      AWS_REGION: 'us-east-1',
+      AWS_SECRET_ACCESS_KEY: 'test',
+      DATABASE_URL: databaseUrl,
+      IDEMPOTENCY_ENABLED: 'false',
+      SERVICE_VERSION: 'v1',
+      SQS_QUEUE_URL: queueUrl,
+    });
+    const nonIdempotentService = new OrderService(
+      config,
+      new MetricsService(config),
+      loggerMock(),
+    );
+    await nonIdempotentService.onModuleInit();
+
+    const first = await nonIdempotentService.approvePayment({
+      body: paymentPayload(paymentId, 'cart_idempotency_off_001'),
+      correlationId: 'checkout_idempotency_off_001',
+      requestId: `req_first_${paymentId}`,
+    });
+    const second = await nonIdempotentService.approvePayment({
+      body: paymentPayload(paymentId, 'cart_idempotency_off_001'),
+      correlationId: 'checkout_idempotency_off_001',
+      requestId: `req_second_${paymentId}`,
+    });
+    await nonIdempotentService.onModuleDestroy();
+
+    expect(first).toMatchObject({
+      payment_id: paymentId,
+      status: 'ORDER_CONFIRMED',
+      duplicate: false,
+    });
+    expect(second).toMatchObject({
+      payment_id: paymentId,
+      status: 'ORDER_CONFIRMED',
+      duplicate: false,
+    });
+    expect(second.order_id).not.toBe(first.order_id);
+    await expect(dbOrderCount(paymentId)).resolves.toBe(2);
+
+    await receiveEvents('orders.order_confirmed.v1', [
+      first.order_id,
+      second.order_id,
+    ]);
+  });
+
   it('publishes order_confirmation_failed when persistence fails', async () => {
     const paymentId = `pay_failure_${Date.now()}`;
     const config = new ConfigService({
@@ -302,6 +352,58 @@ describe('order-management ATDD', () => {
     throw new Error(`${eventName} not found for ${orderId}`);
   }
 
+  async function receiveEvents(
+    eventName: string,
+    orderIds: string[],
+  ): Promise<EventEnvelope[]> {
+    const deadline = Date.now() + 5000;
+    const remaining = new Set(orderIds);
+    const events: EventEnvelope[] = [];
+
+    while (Date.now() < deadline && remaining.size > 0) {
+      const response = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          MaxNumberOfMessages: 10,
+          WaitTimeSeconds: 1,
+        }),
+      );
+
+      for (const message of response.Messages ?? []) {
+        const event = message.Body
+          ? (JSON.parse(message.Body) as EventEnvelope)
+          : undefined;
+
+        if (message.ReceiptHandle) {
+          await sqs.send(
+            new DeleteMessageCommand({
+              QueueUrl: queueUrl,
+              ReceiptHandle: message.ReceiptHandle,
+            }),
+          );
+        }
+
+        const orderId = event?.payload.order_id;
+        if (
+          event?.event_name === eventName &&
+          typeof orderId === 'string' &&
+          remaining.has(orderId)
+        ) {
+          events.push(event);
+          remaining.delete(orderId);
+        }
+      }
+    }
+
+    if (remaining.size === 0) {
+      return events;
+    }
+
+    throw new Error(
+      `${eventName} not found for ${Array.from(remaining).join(', ')}`,
+    );
+  }
+
   async function receiveEventByPayment(
     eventName: string,
     paymentId: string,
@@ -352,6 +454,15 @@ describe('order-management ATDD', () => {
     );
 
     return result.rows[0]?.payment_id;
+  }
+
+  async function dbOrderCount(paymentId: string): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      'SELECT COUNT(*) AS count FROM orders WHERE payment_id = $1',
+      [paymentId],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
   }
 });
 

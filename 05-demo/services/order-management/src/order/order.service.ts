@@ -230,24 +230,26 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     body: PaymentApprovedDto,
   ): Promise<OrderCreateResult> {
     const order = newOrderRecord(body);
-    const insertSql = this.idempotencyEnabled()
+    const idempotencyEnabled = this.idempotencyEnabled();
+    const insertSql = idempotencyEnabled
       ? `INSERT INTO orders (
-           order_id, payment_id, buyer_id, seller_id, site_id, currency,
-           gross_amount, status, items, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
-         ON CONFLICT (payment_id) DO NOTHING
+           order_id, payment_id, idempotency_enabled, buyer_id, seller_id,
+           site_id, currency, gross_amount, status, items, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
+         ON CONFLICT (payment_id) WHERE idempotency_enabled DO NOTHING
          RETURNING order_id, payment_id, buyer_id, seller_id, site_id, currency,
                    gross_amount, status, items, created_at, updated_at`
       : `INSERT INTO orders (
-           order_id, payment_id, buyer_id, seller_id, site_id, currency,
-           gross_amount, status, items, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
+           order_id, payment_id, idempotency_enabled, buyer_id, seller_id,
+           site_id, currency, gross_amount, status, items, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
          RETURNING order_id, payment_id, buyer_id, seller_id, site_id, currency,
                    gross_amount, status, items, created_at, updated_at`;
 
     const result = await this.db().query<OrderRow>(insertSql, [
       order.order_id,
       order.payment_id,
+      idempotencyEnabled,
       order.buyer_id,
       order.seller_id,
       order.site_id,
@@ -263,7 +265,7 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
       return { order: toRecord(result.rows[0]), duplicate: false };
     }
 
-    const existing = await this.findByPaymentId(body.payment_id);
+    const existing = await this.findIdempotentByPaymentId(body.payment_id);
     if (!existing) {
       throw new Error('duplicate payment record was not found after conflict');
     }
@@ -271,14 +273,17 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     return { order: existing, duplicate: true };
   }
 
-  private async findByPaymentId(
+  private async findIdempotentByPaymentId(
     paymentId: string,
   ): Promise<OrderRecord | undefined> {
     const result = await this.db().query<OrderRow>(
       `SELECT order_id, payment_id, buyer_id, seller_id, site_id, currency,
               gross_amount, status, items, created_at, updated_at
        FROM orders
-       WHERE payment_id = $1`,
+       WHERE payment_id = $1
+         AND idempotency_enabled = true
+       ORDER BY created_at ASC
+       LIMIT 1`,
       [paymentId],
     );
 
@@ -406,7 +411,8 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     await this.db().query(`
       CREATE TABLE IF NOT EXISTS orders (
         order_id TEXT PRIMARY KEY,
-        payment_id TEXT UNIQUE NOT NULL,
+        payment_id TEXT NOT NULL,
+        idempotency_enabled BOOLEAN NOT NULL DEFAULT true,
         buyer_id TEXT NOT NULL,
         seller_id TEXT NOT NULL,
         site_id TEXT NOT NULL,
@@ -417,6 +423,19 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
         created_at TIMESTAMPTZ NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL
       )
+    `);
+    await this.db().query(`
+      ALTER TABLE orders
+        ADD COLUMN IF NOT EXISTS idempotency_enabled BOOLEAN NOT NULL DEFAULT true
+    `);
+    await this.db().query(`
+      ALTER TABLE orders
+        DROP CONSTRAINT IF EXISTS orders_payment_id_key
+    `);
+    await this.db().query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS orders_payment_id_idempotent_unique
+        ON orders (payment_id)
+        WHERE idempotency_enabled
     `);
   }
 
