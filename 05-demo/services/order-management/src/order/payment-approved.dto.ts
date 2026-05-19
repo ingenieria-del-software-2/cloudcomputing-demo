@@ -3,6 +3,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsNumber,
+  IsOptional,
   IsString,
   Length,
   Matches,
@@ -56,6 +57,10 @@ export class PaymentApprovedDto {
   @IsNumber()
   @Min(0.01)
   gross_amount!: number;
+
+  @IsString()
+  @IsOptional()
+  payment_approved_at?: string;
 
   @IsArray()
   @ArrayMinSize(1)

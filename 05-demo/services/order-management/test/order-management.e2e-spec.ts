@@ -3,6 +3,7 @@ import {
   DeleteMessageCommand,
   GetQueueAttributesCommand,
   ReceiveMessageCommand,
+  SendMessageCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { INestApplication } from '@nestjs/common';
@@ -31,12 +32,17 @@ type EventEnvelope = {
   event_version: string;
   producer: string;
   correlation_id: string;
+  causation_id: string;
   idempotency_key: string;
   payload: Record<string, unknown>;
 };
 
 const queueUrl = 'http://localhost:4566/000000000000/orders-confirmed-intake';
 const dlqArn = 'arn:aws:sqs:us-east-1:000000000000:orders-confirmed-dlq';
+const paymentQueueUrl =
+  'http://localhost:4566/000000000000/payments-approved-intake';
+const paymentDlqArn =
+  'arn:aws:sqs:us-east-1:000000000000:payments-approved-dlq';
 const databaseUrl =
   process.env.DATABASE_URL ??
   'postgresql://order:order@localhost:15432/order_management';
@@ -60,8 +66,11 @@ describe('order-management ATDD', () => {
       GIT_COMMIT: 'e2e',
       DATABASE_URL: databaseUrl,
       IDEMPOTENCY_ENABLED: 'true',
+      PAYMENT_INTAKE_CONSUMER_ENABLED: 'true',
+      PAYMENT_INTAKE_SQS_QUEUE_URL: paymentQueueUrl,
       SERVICE_VERSION: 'v1',
       SQS_QUEUE_URL: queueUrl,
+      SQS_WAIT_TIME_SECONDS: '1',
     };
     delete process.env.SQS_ENDPOINT;
 
@@ -74,6 +83,20 @@ describe('order-management ATDD', () => {
       },
     });
     db = new Pool({ connectionString: databaseUrl });
+    await sqs.send(
+      new CreateQueueCommand({ QueueName: 'payments-approved-dlq' }),
+    );
+    await sqs.send(
+      new CreateQueueCommand({
+        QueueName: 'payments-approved-intake',
+        Attributes: {
+          RedrivePolicy: JSON.stringify({
+            deadLetterTargetArn: paymentDlqArn,
+            maxReceiveCount: '3',
+          }),
+        },
+      }),
+    );
     await sqs.send(
       new CreateQueueCommand({ QueueName: 'orders-confirmed-dlq' }),
     );
@@ -159,6 +182,8 @@ describe('order-management ATDD', () => {
       });
 
     await expect(dbOrderPaymentId(order.order_id)).resolves.toBe(paymentId);
+    await expect(dbOrderItemCount(order.order_id)).resolves.toBe(1);
+    await expect(dbOrderTransitionCount(order.order_id)).resolves.toBe(1);
 
     const event = await receiveEvent(
       'orders.order_confirmed.v1',
@@ -178,11 +203,33 @@ describe('order-management ATDD', () => {
       buyer_id: 'buyer_918273',
       seller_id: 'seller_445566',
     });
+    expect(event.payload.payment_approved_at).toBeDefined();
 
     const metrics = await http().get('/metrics').expect(200);
     expect(metrics.text).toContain(
       'orders_total{service="order-management",status="confirmed",version="v1"}',
     );
+    expect(metrics.text).toContain(
+      'order_confirmation_within_5s_ratio{service="order-management",version="v1"} 1',
+    );
+  });
+
+  it('consumes payments.payment_approved from the optional SQS intake', async () => {
+    const paymentId = `pay_sqs_intake_${Date.now()}`;
+
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: paymentQueueUrl,
+        MessageBody: JSON.stringify(paymentApprovedEvent(paymentId)),
+      }),
+    );
+
+    const order = await waitForOrderByPaymentId(paymentId);
+    const event = await receiveEvent(
+      'orders.order_confirmed.v1',
+      order.order_id,
+    );
+    expect(event.causation_id).toBe(`evt_${paymentId}`);
   });
 
   it('ignores duplicate payments without creating a second order', async () => {
@@ -299,6 +346,104 @@ describe('order-management ATDD', () => {
       payment_id: paymentId,
       business_error_code: 'ORDER_PERSISTENCE_FAILED',
     });
+  });
+
+  it('cancels an order after fulfillment publishes commitment_failed', async () => {
+    const paymentId = `pay_cancel_${Date.now()}`;
+    const created = await postPayment(paymentId, 'cart_cancel_001').expect(201);
+    const order = created.body as OrderResponse;
+    await receiveEvent('orders.order_confirmed.v1', order.order_id);
+
+    const cancelled = await http()
+      .post('/internal/fulfillment/failed')
+      .set({ 'x-request-id': `req_cancel_${paymentId}` })
+      .send(fulfillmentFailedEvent(order.order_id))
+      .expect(202);
+
+    expect(cancelled.body).toMatchObject({
+      order_id: order.order_id,
+      payment_id: paymentId,
+      status: 'ORDER_CANCELLED',
+      duplicate: false,
+      reason: 'STOCK_UNAVAILABLE',
+    });
+    await expect(dbOrderStatus(order.order_id)).resolves.toBe(
+      'ORDER_CANCELLED',
+    );
+    await expect(dbOrderTransitionCount(order.order_id)).resolves.toBe(2);
+
+    const event = await receiveEvent(
+      'orders.order_cancelled.v1',
+      order.order_id,
+    );
+    expect(event).toMatchObject({
+      event_name: 'orders.order_cancelled.v1',
+      producer: 'order-management',
+      correlation_id: `checkout_${order.order_id}`,
+      idempotency_key: `order_id:${order.order_id}:cancellation`,
+    });
+    expect(event.payload).toMatchObject({
+      order_id: order.order_id,
+      payment_id: paymentId,
+      reason: 'STOCK_UNAVAILABLE',
+    });
+    expect(typeof event.payload.payment_approved_at).toBe('string');
+  });
+
+  it('persists the order and republishes the outbox when SQS is temporarily unavailable', async () => {
+    const paymentId = `pay_outbox_${Date.now()}`;
+    const failingConfig = new ConfigService({
+      AWS_ACCESS_KEY_ID: 'test',
+      AWS_ENDPOINT_URL: 'http://127.0.0.1:1',
+      AWS_REGION: 'us-east-1',
+      AWS_SECRET_ACCESS_KEY: 'test',
+      DATABASE_URL: databaseUrl,
+      OUTBOX_PUBLISHER_ENABLED: 'false',
+      SERVICE_VERSION: 'v1',
+      SQS_QUEUE_URL: queueUrl,
+    });
+    const failingService = new OrderService(
+      failingConfig,
+      new MetricsService(failingConfig),
+      loggerMock(),
+    );
+    await failingService.onModuleInit();
+
+    const result = await failingService.approvePayment({
+      body: paymentPayload(paymentId, 'cart_outbox_001'),
+      correlationId: 'checkout_outbox_001',
+      requestId: `req_${paymentId}`,
+    });
+    await failingService.onModuleDestroy();
+
+    expect(result).toMatchObject({
+      payment_id: paymentId,
+      status: 'ORDER_CONFIRMED',
+      duplicate: false,
+    });
+    await expect(dbOrderPaymentId(result.order_id)).resolves.toBe(paymentId);
+    await expect(dbOutboxPendingCount(result.order_id)).resolves.toBe(1);
+
+    const recoveryConfig = new ConfigService({
+      AWS_ACCESS_KEY_ID: 'test',
+      AWS_ENDPOINT_URL: 'http://localhost:4566',
+      AWS_REGION: 'us-east-1',
+      AWS_SECRET_ACCESS_KEY: 'test',
+      DATABASE_URL: databaseUrl,
+      OUTBOX_POLL_INTERVAL_MS: '100',
+      SERVICE_VERSION: 'v1',
+      SQS_QUEUE_URL: queueUrl,
+    });
+    const recoveryService = new OrderService(
+      recoveryConfig,
+      new MetricsService(recoveryConfig),
+      loggerMock(),
+    );
+    await recoveryService.onModuleInit();
+
+    await receiveEvent('orders.order_confirmed.v1', result.order_id);
+    await recoveryService.onModuleDestroy();
+    await expect(dbOutboxPendingCount(result.order_id)).resolves.toBe(0);
   });
 
   function postPayment(paymentId: string, cartId: string) {
@@ -456,6 +601,66 @@ describe('order-management ATDD', () => {
     return result.rows[0]?.payment_id;
   }
 
+  async function waitForOrderByPaymentId(
+    paymentId: string,
+  ): Promise<{ order_id: string }> {
+    const deadline = Date.now() + 5000;
+
+    while (Date.now() < deadline) {
+      const result = await db.query<{ order_id: string }>(
+        'SELECT order_id FROM orders WHERE payment_id = $1 LIMIT 1',
+        [paymentId],
+      );
+
+      if (result.rows[0]) {
+        return result.rows[0];
+      }
+
+      await sleep(100);
+    }
+
+    throw new Error(`order was not created for ${paymentId}`);
+  }
+
+  async function dbOrderStatus(orderId: string): Promise<string | undefined> {
+    const result = await db.query<{ status: string }>(
+      'SELECT status FROM orders WHERE order_id = $1',
+      [orderId],
+    );
+
+    return result.rows[0]?.status;
+  }
+
+  async function dbOrderItemCount(orderId: string): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      'SELECT COUNT(*) AS count FROM order_items WHERE order_id = $1',
+      [orderId],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async function dbOrderTransitionCount(orderId: string): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      'SELECT COUNT(*) AS count FROM order_state_transitions WHERE order_id = $1',
+      [orderId],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async function dbOutboxPendingCount(orderId: string): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM event_outbox
+       WHERE payload->'payload'->>'order_id' = $1
+         AND status <> 'PUBLISHED'`,
+      [orderId],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
   async function dbOrderCount(paymentId: string): Promise<number> {
     const result = await db.query<{ count: string }>(
       'SELECT COUNT(*) AS count FROM orders WHERE payment_id = $1',
@@ -486,9 +691,60 @@ function paymentPayload(paymentId: string, cartId: string) {
   };
 }
 
+function paymentApprovedEvent(paymentId: string) {
+  const occurredAt = new Date().toISOString();
+
+  return {
+    event_id: `evt_${paymentId}`,
+    event_name: 'payments.payment_approved.v1',
+    event_version: '1.0',
+    occurred_at: occurredAt,
+    producer: 'payments-core',
+    correlation_id: `checkout_${paymentId}`,
+    causation_id: `pay_${paymentId}`,
+    idempotency_key: `payment_id:${paymentId}`,
+    payload: {
+      ...paymentPayload(paymentId, `cart_${paymentId}`),
+      payment_approved_at: occurredAt,
+    },
+  };
+}
+
+function fulfillmentFailedEvent(orderId: string) {
+  const occurredAt = new Date().toISOString();
+
+  return {
+    event_id: `evt_fulfillment_failed_${orderId}`,
+    event_name: 'fulfillment.commitment_failed.v1',
+    event_version: '1.0',
+    occurred_at: occurredAt,
+    producer: 'fulfillment-planning',
+    correlation_id: `checkout_${orderId}`,
+    causation_id: `evt_order_${orderId}`,
+    idempotency_key: `order_id:${orderId}`,
+    payload: {
+      order_id: orderId,
+      payment_approved_at: occurredAt,
+      reason: 'STOCK_UNAVAILABLE',
+      failed_items: [
+        {
+          seller_sku: 'MATE-STANLEY-NO-OFICIAL',
+          requested_quantity: 2,
+          available_quantity: 0,
+        },
+      ],
+      failed_at: occurredAt,
+    },
+  };
+}
+
 function loggerMock(): jest.Mocked<StructuredLoggerService> {
   return {
     info: jest.fn(),
     error: jest.fn(),
   } as unknown as jest.Mocked<StructuredLoggerService>;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

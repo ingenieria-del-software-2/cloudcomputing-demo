@@ -53,6 +53,15 @@ describe('MetricsService', () => {
     );
   });
 
+  it('records the order confirmation SLO ratio', async () => {
+    service.recordOrderConfirmationSlo('v1', 0.5, true);
+    service.recordOrderConfirmationSlo('v1', 7, true);
+
+    await expect(service.render()).resolves.toContain(
+      'order_confirmation_within_5s_ratio{service="order-management",version="v1"} 0.5',
+    );
+  });
+
   it('records HTTP request duration buckets', async () => {
     service.recordHttpRequest({
       route: '/transactions',

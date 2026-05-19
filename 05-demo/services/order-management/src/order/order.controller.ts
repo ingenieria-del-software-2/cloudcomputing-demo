@@ -10,6 +10,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { FulfillmentFailedEventDto } from './fulfillment-failed-event.dto';
 import { OrderService } from './order.service';
 import { PaymentApprovedDto } from './payment-approved.dto';
 
@@ -30,6 +31,20 @@ export class OrderController {
       correlationId,
     });
     response.status(result.duplicate ? HttpStatus.OK : HttpStatus.CREATED);
+    return result;
+  }
+
+  @Post('/internal/fulfillment/failed')
+  async cancelAfterFulfillmentFailed(
+    @Body() body: FulfillmentFailedEventDto,
+    @Headers('x-request-id') requestId: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.orders.cancelAfterFulfillmentFailed({
+      event: body,
+      requestId: requestId ?? body.event_id,
+    });
+    response.status(result.duplicate ? HttpStatus.OK : HttpStatus.ACCEPTED);
     return result;
   }
 

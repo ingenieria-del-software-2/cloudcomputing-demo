@@ -18,6 +18,7 @@ make verify-order-management
 
 ```text
 POST /internal/payments/approved
+POST /internal/fulfillment/failed
 GET /orders/:order_id
 GET /health
 GET /healthz
@@ -39,5 +40,7 @@ AWS_ACCESS_KEY_ID=test
 AWS_SECRET_ACCESS_KEY=test
 SQS_QUEUE_URL=http://localhost:4566/000000000000/orders-confirmed-intake
 TRACKING_SQS_QUEUE_URL=http://localhost:4566/000000000000/buyer-tracking-events
+PAYMENT_INTAKE_CONSUMER_ENABLED=false
+PAYMENT_INTAKE_SQS_QUEUE_URL=http://localhost:4566/000000000000/payments-approved-intake
 IDEMPOTENCY_ENABLED=true
 ```

@@ -10,8 +10,10 @@ import {
 
 type OrderStatus =
   | 'confirmed'
+  | 'cancelled'
   | 'duplicate_payment_ignored'
   | 'confirmation_failed'
+  | 'cancellation_failed'
   | 'accepted'
   | 'replayed'
   | 'invalid'
@@ -30,9 +32,14 @@ export class MetricsService {
   private readonly httpDuration: Histogram<string>;
   private readonly orders: Counter<string>;
   private readonly duplicateOrderAttempts: Counter<string>;
+  private readonly orderConfirmationWithin5s: Gauge<string>;
   private readonly ledgerRequests: Counter<string>;
   private readonly sqsPublish: Counter<string>;
+  private readonly eventBacklogDepth: Gauge<string>;
+  private readonly eventDlqDepth: Gauge<string>;
   private readonly buildInfo: Gauge<string>;
+  private orderConfirmationEligible = 0;
+  private orderConfirmationGood = 0;
 
   constructor(private readonly config: ConfigService = new ConfigService()) {
     collectDefaultMetrics({
@@ -67,6 +74,12 @@ export class MetricsService {
       labelNames: ['service', 'version'],
       registers: [this.registry],
     });
+    this.orderConfirmationWithin5s = new Gauge({
+      name: 'order_confirmation_within_5s_ratio',
+      help: 'Ratio of valid approved payments confirmed as orders within 5 seconds',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
     this.ledgerRequests = new Counter({
       name: 'ledger_client_requests_total',
       help: 'Total ledger client requests',
@@ -77,6 +90,18 @@ export class MetricsService {
       name: 'sqs_publish_total',
       help: 'Total SQS publish attempts',
       labelNames: ['service', 'queue', 'status', 'version'],
+      registers: [this.registry],
+    });
+    this.eventBacklogDepth = new Gauge({
+      name: 'event_backlog_depth',
+      help: 'Approximate number of events waiting in the service queue or outbox',
+      labelNames: ['service', 'queue', 'version'],
+      registers: [this.registry],
+    });
+    this.eventDlqDepth = new Gauge({
+      name: 'event_dlq_depth',
+      help: 'Approximate number of events waiting in the service dead-letter queue',
+      labelNames: ['service', 'queue', 'version'],
       registers: [this.registry],
     });
     this.buildInfo = new Gauge({
@@ -113,6 +138,23 @@ export class MetricsService {
     this.duplicateOrderAttempts.inc({ service: this.serviceName, version });
   }
 
+  recordOrderConfirmationSlo(
+    version: string,
+    durationSeconds: number,
+    confirmed: boolean,
+  ): void {
+    this.orderConfirmationEligible += 1;
+
+    if (confirmed && durationSeconds < 5) {
+      this.orderConfirmationGood += 1;
+    }
+
+    this.orderConfirmationWithin5s.set(
+      { service: this.serviceName, version },
+      this.orderConfirmationGood / this.orderConfirmationEligible,
+    );
+  }
+
   recordTransaction(status: OrderStatus, version: string): void {
     this.recordOrder(status, version);
   }
@@ -132,6 +174,20 @@ export class MetricsService {
       status,
       version,
     });
+  }
+
+  recordEventBacklogDepth(queue: string, version: string, depth: number): void {
+    this.eventBacklogDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
+  }
+
+  recordEventDlqDepth(queue: string, version: string, depth: number): void {
+    this.eventDlqDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
   }
 
   get contentType(): string {
