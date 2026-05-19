@@ -373,11 +373,11 @@ describe('order-management ATDD', () => {
     await expect(dbOrderTransitionCount(order.order_id)).resolves.toBe(2);
 
     const event = await receiveEvent(
-      'orders.order_cancelled.v1',
+      'orders.order_cancellation_requested.v1',
       order.order_id,
     );
     expect(event).toMatchObject({
-      event_name: 'orders.order_cancelled.v1',
+      event_name: 'orders.order_cancellation_requested.v1',
       producer: 'order-management',
       correlation_id: `checkout_${order.order_id}`,
       idempotency_key: `order_id:${order.order_id}:cancellation`,
@@ -388,6 +388,7 @@ describe('order-management ATDD', () => {
       reason: 'STOCK_UNAVAILABLE',
     });
     expect(typeof event.payload.payment_approved_at).toBe('string');
+    expect(typeof event.payload.cancellation_requested_at).toBe('string');
   });
 
   it('persists the order and republishes the outbox when SQS is temporarily unavailable', async () => {

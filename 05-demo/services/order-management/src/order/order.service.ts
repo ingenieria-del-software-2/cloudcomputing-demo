@@ -213,21 +213,24 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
       }
 
       this.metrics.recordOrder('cancelled', version);
-      this.logger.info('order_cancelled_after_fulfillment_failed', {
-        request_id: command.requestId,
-        event_id: result.event?.event_id ?? command.event.event_id,
-        event_name: result.event?.event_name ?? command.event.event_name,
-        correlation_id: command.event.correlation_id,
-        order_id: result.order.order_id,
-        payment_id: result.order.payment_id,
-        status_before: result.previousStatus ?? result.order.status,
-        status_after: result.order.status,
-        business_error_code: cancellationReason(command.event),
-        duration_ms: durationMs(startedAt),
-        result: result.duplicate
-          ? 'ORDER_ALREADY_CANCELLED'
-          : 'ORDER_CANCELLED',
-      });
+      this.logger.info(
+        'order_cancellation_requested_after_fulfillment_failed',
+        {
+          request_id: command.requestId,
+          event_id: result.event?.event_id ?? command.event.event_id,
+          event_name: result.event?.event_name ?? command.event.event_name,
+          correlation_id: command.event.correlation_id,
+          order_id: result.order.order_id,
+          payment_id: result.order.payment_id,
+          status_before: result.previousStatus ?? result.order.status,
+          status_after: result.order.status,
+          business_error_code: cancellationReason(command.event),
+          duration_ms: durationMs(startedAt),
+          result: result.duplicate
+            ? 'ORDER_ALREADY_CANCELLED'
+            : 'ORDER_CANCELLED',
+        },
+      );
 
       return {
         order_id: result.order.order_id,
@@ -473,7 +476,7 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
         causationId: command.event.event_id,
         changedAt: cancelledAt,
       });
-      const event = this.orderCancelledEvent(
+      const event = this.orderCancellationRequestedEvent(
         cancelled,
         command.event,
         cancelledAt,
@@ -675,16 +678,16 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private orderCancelledEvent(
+  private orderCancellationRequestedEvent(
     order: OrderRecord,
     source: FulfillmentFailedEventDto,
-    cancelledAt: string,
+    requestedAt: string,
   ): EventEnvelope<Record<string, unknown>> {
     return {
       event_id: newId('evt'),
-      event_name: 'orders.order_cancelled.v1',
+      event_name: 'orders.order_cancellation_requested.v1',
       event_version: '1.0',
-      occurred_at: cancelledAt,
+      occurred_at: requestedAt,
       producer: 'order-management',
       correlation_id: source.correlation_id,
       causation_id: source.event_id,
@@ -697,7 +700,7 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
         reason: cancellationReason(source),
         source_event_name: source.event_name,
         payment_approved_at: stringValue(source.payload.payment_approved_at),
-        cancelled_at: cancelledAt,
+        cancellation_requested_at: requestedAt,
       },
     };
   }

@@ -4,6 +4,8 @@ NestJS HTTP API for the CompraFiubi GameDay order service.
 
 It receives mocked payment approvals, creates commercial orders idempotently by `payment_id`, publishes order lifecycle events to SQS, and exposes operational endpoints for Docker/Prometheus.
 
+Fulfillment stock failures are represented externally as `orders.order_cancellation_requested.v1`; the local service still marks the administrative order state as `ORDER_CANCELLED` after applying that request.
+
 ## Local Commands
 
 Run commands from the repo root. `make` is the public DX API; package scripts stay package-local for implementation detail and editor tooling.
