@@ -372,6 +372,36 @@ describe('fulfillment-planning ATDD', () => {
     );
   });
 
+  it('queues HTTP-ingressed order_confirmed events into local SQS before processing', async () => {
+    const previousMode = process.env.HTTP_EVENT_INGRESS_MODE;
+    process.env.HTTP_EVENT_INGRESS_MODE = 'sqs';
+
+    try {
+      const orderId = `ord_http_sqs_${Date.now()}`;
+      await postOrderConfirmed(orderId, 'CARPINCHO-USB-C', 1)
+        .expect(202)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            event_name: 'orders.order_confirmed.v1',
+            queued: true,
+            queue: 'orders-confirmed-intake',
+            version: 'v1',
+          });
+        });
+
+      await receiveEvent('fulfillment.commitment_confirmed.v1', orderId);
+      await expect(dbCommitmentStatus(orderId)).resolves.toBe(
+        'FULFILLMENT_COMMITTED',
+      );
+    } finally {
+      if (previousMode === undefined) {
+        delete process.env.HTTP_EVENT_INGRESS_MODE;
+      } else {
+        process.env.HTTP_EVENT_INGRESS_MODE = previousMode;
+      }
+    }
+  });
+
   it('persists the commitment and republishes the outbox when SQS is temporarily unavailable', async () => {
     const orderId = `ord_fulfillment_outbox_${Date.now()}`;
     const failingConfig = new ConfigService({

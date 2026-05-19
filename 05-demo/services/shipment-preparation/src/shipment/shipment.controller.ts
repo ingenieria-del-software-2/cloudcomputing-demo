@@ -23,6 +23,15 @@ export class ShipmentController {
     @Headers('x-request-id') requestId: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
+    if (this.shipments.shouldQueueInternalEvents()) {
+      const result = await this.shipments.enqueueCommitmentConfirmedEvent({
+        event,
+        requestId: requestId ?? event.event_id,
+      });
+      response.status(HttpStatus.ACCEPTED);
+      return result;
+    }
+
     const result = await this.shipments.handleCommitmentConfirmed({
       event,
       requestId: requestId ?? event.event_id,

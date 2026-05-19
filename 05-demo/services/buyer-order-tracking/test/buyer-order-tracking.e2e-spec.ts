@@ -290,6 +290,40 @@ describe('buyer-order-tracking ATDD', () => {
     await receiveTrackingUpdate(orderId, 'ORDER_CONFIRMED');
   });
 
+  it('queues HTTP-ingressed tracking events into local SQS before projecting', async () => {
+    const previousMode = process.env.HTTP_EVENT_INGRESS_MODE;
+    process.env.HTTP_EVENT_INGRESS_MODE = 'sqs';
+
+    try {
+      const orderId = `ord_track_http_sqs_${Date.now()}`;
+      const buyerId = `buyer_http_sqs_${Date.now()}`;
+      await postEvent(orderConfirmedEvent(orderId, buyerId))
+        .expect(202)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            event_name: 'orders.order_confirmed.v1',
+            queued: true,
+            queue: 'buyer-tracking-events',
+            version: 'v1',
+          });
+        });
+
+      const tracking = await waitForTracking(orderId, 'ORDER_CONFIRMED');
+      expect(tracking).toMatchObject({
+        order_id: orderId,
+        buyer_id: buyerId,
+        visible_status: 'ORDER_CONFIRMED',
+      });
+      await receiveTrackingUpdate(orderId, 'ORDER_CONFIRMED');
+    } finally {
+      if (previousMode === undefined) {
+        delete process.env.HTTP_EVENT_INGRESS_MODE;
+      } else {
+        process.env.HTTP_EVENT_INGRESS_MODE = previousMode;
+      }
+    }
+  });
+
   it('shows honest buyer-facing status when dispatch is blocked', async () => {
     const orderId = `ord_track_blocked_${Date.now()}`;
 

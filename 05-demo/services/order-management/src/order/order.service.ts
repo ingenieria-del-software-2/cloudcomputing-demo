@@ -120,6 +120,14 @@ export interface OrderCancellationResponse {
   reason?: string;
 }
 
+export interface QueuedEventResponse {
+  event_id: string;
+  event_name: string;
+  queued: true;
+  queue: string;
+  version: string;
+}
+
 @Injectable()
 export class OrderService implements OnModuleInit, OnModuleDestroy {
   private pool?: Pool;
@@ -128,6 +136,7 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
   private publishingOutbox = false;
   private stopping = false;
   private paymentWorkers: Promise<void>[] = [];
+  private fulfillmentFailedWorkers: Promise<void>[] = [];
 
   constructor(
     private readonly config: ConfigService,
@@ -140,6 +149,7 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     await this.resetInterruptedOutboxRows();
     this.startOutboxPublisher();
     this.startPaymentIntakeWorkers();
+    this.startFulfillmentFailedWorkers();
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -147,7 +157,10 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     if (this.outboxTimer) {
       clearInterval(this.outboxTimer);
     }
-    await Promise.allSettled(this.paymentWorkers);
+    await Promise.allSettled([
+      ...this.paymentWorkers,
+      ...this.fulfillmentFailedWorkers,
+    ]);
     await this.pool?.end();
     this.sqsClient?.destroy();
   }
@@ -261,6 +274,74 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
         status: 503,
         code: 'ORDER_CANCELLATION_FAILED',
         message: 'Order could not be cancelled',
+      });
+    }
+  }
+
+  shouldQueueFulfillmentFailedEvents(): boolean {
+    return (
+      this.config.get<string>(
+        'FULFILLMENT_FAILED_HTTP_INGRESS_MODE',
+        'direct',
+      ) === 'sqs'
+    );
+  }
+
+  async enqueueFulfillmentFailedEvent(
+    command: CancelAfterFulfillmentFailedCommand,
+  ): Promise<QueuedEventResponse> {
+    const version = this.config.get<string>('SERVICE_VERSION', 'v1');
+
+    try {
+      await this.client().send(
+        new SendMessageCommand({
+          QueueUrl: this.fulfillmentFailedIntakeQueueUrl(),
+          MessageBody: JSON.stringify(command.event),
+        }),
+      );
+      this.metrics.recordSqsPublish(
+        'success',
+        version,
+        this.fulfillmentFailedIntakeQueueName(),
+      );
+      this.logger.info('fulfillment_failed_event_enqueued', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        queue: this.fulfillmentFailedIntakeQueueName(),
+        result: 'EVENT_ENQUEUED',
+      });
+
+      return {
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        queued: true,
+        queue: this.fulfillmentFailedIntakeQueueName(),
+        version,
+      };
+    } catch (error) {
+      this.metrics.recordSqsPublish(
+        'failure',
+        version,
+        this.fulfillmentFailedIntakeQueueName(),
+      );
+      this.logger.error('fulfillment_failed_event_enqueue_failed', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        queue: this.fulfillmentFailedIntakeQueueName(),
+        business_error_code: 'FULFILLMENT_FAILED_EVENT_QUEUE_FAILED',
+        result: 'FULFILLMENT_FAILED_EVENT_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+      throw new ServiceUnavailableException({
+        status: 503,
+        code: 'FULFILLMENT_FAILED_EVENT_QUEUE_FAILED',
+        message: 'Fulfillment failed event could not be queued',
       });
     }
   }
@@ -604,6 +685,29 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
   private outboxEventsFor(
     event: EventEnvelope<Record<string, unknown>>,
   ): OutboxEvent[] {
+    if (this.usesHttpEventTargets()) {
+      const events: OutboxEvent[] = [];
+
+      const trackingTargetUrl = this.trackingTargetUrl();
+      if (trackingTargetUrl && isOrderTrackingEvent(event.event_name)) {
+        events.push({
+          event,
+          queueName: this.trackingTargetName(),
+          queueUrl: trackingTargetUrl,
+        });
+      }
+
+      if (event.event_name === 'orders.order_confirmed.v1') {
+        events.push({
+          event,
+          queueName: this.fulfillmentTargetName(),
+          queueUrl: this.fulfillmentTargetUrl(),
+        });
+      }
+
+      return events;
+    }
+
     const events: OutboxEvent[] = [
       {
         event,
@@ -918,12 +1022,16 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     version: string,
   ): Promise<void> {
     try {
-      await this.client().send(
-        new SendMessageCommand({
-          QueueUrl: row.queue_url,
-          MessageBody: JSON.stringify(row.payload),
-        }),
-      );
+      if (isHttpEventTarget(row.queue_url)) {
+        await this.postOutboxEvent(row);
+      } else {
+        await this.client().send(
+          new SendMessageCommand({
+            QueueUrl: row.queue_url,
+            MessageBody: JSON.stringify(row.payload),
+          }),
+        );
+      }
       await this.db().query(
         `UPDATE event_outbox
          SET status = 'PUBLISHED', published_at = NOW(), updated_at = NOW()
@@ -952,6 +1060,25 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
         result: 'ORDER_EVENT_QUEUE_FAILED',
         error_message: error instanceof Error ? error.message : 'unknown error',
       });
+    }
+  }
+
+  private async postOutboxEvent(row: OutboxRow): Promise<void> {
+    const response = await fetch(row.queue_url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': row.payload.event_id,
+        'x-correlation-id': row.payload.correlation_id,
+      },
+      body: JSON.stringify(row.payload),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `HTTP ${response.status} from ${row.queue_url}: ${body.slice(0, 300)}`,
+      );
     }
   }
 
@@ -1048,6 +1175,99 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     await this.client().send(
       new DeleteMessageCommand({
         QueueUrl: this.paymentIntakeQueueUrl(),
+        ReceiptHandle: receiptHandle,
+      }),
+    );
+  }
+
+  private startFulfillmentFailedWorkers(): void {
+    if (!this.fulfillmentFailedIntakeConsumerEnabled()) {
+      return;
+    }
+
+    for (
+      let index = 0;
+      index < this.fulfillmentFailedIntakeWorkerConcurrency();
+      index += 1
+    ) {
+      this.fulfillmentFailedWorkers.push(
+        this.fulfillmentFailedWorkerLoop(index),
+      );
+    }
+  }
+
+  private async fulfillmentFailedWorkerLoop(
+    workerIndex: number,
+  ): Promise<void> {
+    while (!this.stopping) {
+      try {
+        const response = await this.client().send(
+          new ReceiveMessageCommand({
+            QueueUrl: this.fulfillmentFailedIntakeQueueUrl(),
+            MaxNumberOfMessages: 1,
+            WaitTimeSeconds: this.waitTimeSeconds(),
+          }),
+        );
+
+        for (const message of response.Messages ?? []) {
+          await this.processFulfillmentFailedMessage(workerIndex, message);
+        }
+      } catch (error) {
+        if (!this.stopping) {
+          this.logger.error('fulfillment_failed_worker_poll_failed', {
+            queue: this.fulfillmentFailedIntakeQueueName(),
+            business_error_code: 'FULFILLMENT_FAILED_WORKER_POLL_FAILED',
+            result: 'FULFILLMENT_FAILED_WORKER_POLL_FAILED',
+            error_message:
+              error instanceof Error ? error.message : 'unknown error',
+          });
+          await sleep(250);
+        }
+      }
+    }
+  }
+
+  private async processFulfillmentFailedMessage(
+    workerIndex: number,
+    message: { Body?: string; MessageId?: string; ReceiptHandle?: string },
+  ): Promise<void> {
+    const event = parseFulfillmentFailedMessage(message.Body);
+
+    if (!event) {
+      await this.deleteFulfillmentFailedMessage(message.ReceiptHandle);
+      return;
+    }
+
+    try {
+      await this.cancelAfterFulfillmentFailed({
+        event,
+        requestId: message.MessageId ?? event.event_id,
+      });
+      await this.deleteFulfillmentFailedMessage(message.ReceiptHandle);
+      this.logger.info('fulfillment_failed_message_processed', {
+        event_id: event.event_id,
+        event_name: event.event_name,
+        correlation_id: event.correlation_id,
+        order_id: event.payload.order_id,
+        queue: this.fulfillmentFailedIntakeQueueName(),
+        result: 'MESSAGE_PROCESSED',
+        detail: `worker:${workerIndex}`,
+      });
+    } catch {
+      // Leave the message in SQS so the queue redrive policy can move it to DLQ.
+    }
+  }
+
+  private async deleteFulfillmentFailedMessage(
+    receiptHandle: string | undefined,
+  ): Promise<void> {
+    if (!receiptHandle) {
+      return;
+    }
+
+    await this.client().send(
+      new DeleteMessageCommand({
+        QueueUrl: this.fulfillmentFailedIntakeQueueUrl(),
         ReceiptHandle: receiptHandle,
       }),
     );
@@ -1165,12 +1385,41 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     return this.queueUrl().split('/').pop() ?? 'orders-confirmed-intake';
   }
 
+  private fulfillmentTargetUrl(): string {
+    return this.config.get<string>('FULFILLMENT_EVENTS_URL') ?? this.queueUrl();
+  }
+
+  private fulfillmentTargetName(): string {
+    return this.config.get<string>('FULFILLMENT_EVENTS_URL')
+      ? 'fulfillment-planning-http'
+      : this.queueName();
+  }
+
   private trackingQueueUrl(): string | undefined {
     return this.config.get<string>('TRACKING_SQS_QUEUE_URL');
   }
 
   private trackingQueueName(): string {
     return this.trackingQueueUrl()?.split('/').pop() ?? 'buyer-tracking-events';
+  }
+
+  private trackingTargetUrl(): string | undefined {
+    return (
+      this.config.get<string>('TRACKING_EVENTS_URL') ?? this.trackingQueueUrl()
+    );
+  }
+
+  private trackingTargetName(): string {
+    return this.config.get<string>('TRACKING_EVENTS_URL')
+      ? 'buyer-order-tracking-http'
+      : this.trackingQueueName();
+  }
+
+  private usesHttpEventTargets(): boolean {
+    return Boolean(
+      this.config.get<string>('FULFILLMENT_EVENTS_URL') ??
+      this.config.get<string>('TRACKING_EVENTS_URL'),
+    );
   }
 
   private paymentIntakeQueueUrl(): string {
@@ -1188,6 +1437,20 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private fulfillmentFailedIntakeQueueUrl(): string {
+    return this.config.get<string>(
+      'FULFILLMENT_FAILED_INTAKE_SQS_QUEUE_URL',
+      'http://localhost:4566/000000000000/fulfillment-failed-order-intake',
+    );
+  }
+
+  private fulfillmentFailedIntakeQueueName(): string {
+    return (
+      this.fulfillmentFailedIntakeQueueUrl().split('/').pop() ??
+      'fulfillment-failed-order-intake'
+    );
+  }
+
   private endpoint(): string | undefined {
     const endpoint =
       this.config.get<string>('SQS_ENDPOINT') ??
@@ -1202,6 +1465,9 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
       this.trackingQueueUrl(),
       this.paymentIntakeConsumerEnabled()
         ? this.paymentIntakeQueueUrl()
+        : undefined,
+      this.fulfillmentFailedIntakeConsumerEnabled()
+        ? this.fulfillmentFailedIntakeQueueUrl()
         : undefined,
     ].some((queueUrl) => queueUrl?.startsWith('http://localhost:4566'))
       ? 'http://localhost:4566'
@@ -1241,6 +1507,25 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
   private paymentIntakeWorkerConcurrency(): number {
     const value = Number(
       this.config.get<string>('PAYMENT_INTAKE_WORKER_CONCURRENCY', '1'),
+    );
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+  }
+
+  private fulfillmentFailedIntakeConsumerEnabled(): boolean {
+    return (
+      this.config.get<string>(
+        'FULFILLMENT_FAILED_INTAKE_CONSUMER_ENABLED',
+        this.shouldQueueFulfillmentFailedEvents() ? 'true' : 'false',
+      ) !== 'false'
+    );
+  }
+
+  private fulfillmentFailedIntakeWorkerConcurrency(): number {
+    const value = Number(
+      this.config.get<string>(
+        'FULFILLMENT_FAILED_INTAKE_WORKER_CONCURRENCY',
+        '1',
+      ),
     );
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
   }
@@ -1400,6 +1685,21 @@ function parsePaymentApprovedMessage(
   return undefined;
 }
 
+function parseFulfillmentFailedMessage(
+  body: string | undefined,
+): FulfillmentFailedEventDto | undefined {
+  if (!body) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    return isFulfillmentFailedEvent(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isPaymentApprovedEnvelope(value: unknown): value is {
   event_id: string;
   event_name: 'payments.payment_approved.v1';
@@ -1436,6 +1736,34 @@ function isPaymentApprovedPayload(value: unknown): value is PaymentApprovedDto {
     Array.isArray(candidate.items) &&
     candidate.items.length > 0
   );
+}
+
+function isFulfillmentFailedEvent(
+  value: unknown,
+): value is FulfillmentFailedEventDto {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { event_name?: unknown }).event_name ===
+      'fulfillment.commitment_failed.v1' &&
+    typeof (value as { event_id?: unknown }).event_id === 'string' &&
+    typeof (value as { correlation_id?: unknown }).correlation_id ===
+      'string' &&
+    typeof (value as { payload?: { order_id?: unknown } }).payload?.order_id ===
+      'string'
+  );
+}
+
+function isOrderTrackingEvent(eventName: string): boolean {
+  return (
+    eventName === 'orders.order_confirmed.v1' ||
+    eventName === 'orders.order_cancellation_requested.v1' ||
+    eventName === 'orders.order_cancelled.v1'
+  );
+}
+
+function isHttpEventTarget(url: string): boolean {
+  return /^https?:\/\//.test(url) && url.includes('/internal/');
 }
 
 function isPgUniqueViolation(error: unknown): boolean {

@@ -23,6 +23,15 @@ export class TrackingController {
     @Headers('x-request-id') requestId: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
+    if (this.tracking.shouldQueueInternalEvents()) {
+      const result = await this.tracking.enqueueTrackingEvent({
+        event,
+        requestId: requestId ?? event.event_id,
+      });
+      response.status(HttpStatus.ACCEPTED);
+      return result;
+    }
+
     const result = await this.tracking.handleEvent({
       event,
       requestId: requestId ?? event.event_id,

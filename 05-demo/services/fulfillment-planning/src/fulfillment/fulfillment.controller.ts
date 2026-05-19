@@ -23,6 +23,15 @@ export class FulfillmentController {
     @Headers('x-request-id') requestId: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
+    if (this.fulfillment.shouldQueueInternalEvents()) {
+      const result = await this.fulfillment.enqueueOrderConfirmedEvent({
+        event,
+        requestId: requestId ?? event.event_id,
+      });
+      response.status(HttpStatus.ACCEPTED);
+      return result;
+    }
+
     const result = await this.fulfillment.handleOrderConfirmed({
       event,
       requestId: requestId ?? event.event_id,

@@ -7,7 +7,7 @@ This directory now contains two local demo tracks:
 
 ## CompraFiubi Order-to-Ship GameDay
 
-The local GameDay path covers `order-management`, `fulfillment-planning`, `shipment-preparation`, and `buyer-order-tracking` with Docker Compose, MiniStack, PostgreSQL containers, and service `/metrics` endpoints.
+The local GameDay path covers `order-management`, `fulfillment-planning`, `shipment-preparation`, and `buyer-order-tracking` with Docker Compose, MiniStack, PostgreSQL containers, V3 HTTP-to-local-SQS event forwarding, and service `/metrics` endpoints.
 
 It intentionally excludes Terraform, real AWS IAM changes, and Grafana dashboards. Local incident evidence is driven by environment variables, scripts, `/metrics`, logs, and Prometheus HTTP queries.
 

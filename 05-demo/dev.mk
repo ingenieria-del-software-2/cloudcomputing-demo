@@ -191,6 +191,7 @@ compose-deps-up compose-up:
 	$(COMPOSE) run --rm payments-approved-queue
 	$(COMPOSE) run --rm orders-confirmed-queue
 	$(COMPOSE) run --rm fulfillment-commitment-queue
+	$(COMPOSE) run --rm fulfillment-failed-order-queue
 	$(COMPOSE) run --rm buyer-tracking-queue
 	$(COMPOSE) run --rm customer-experience-queue
 	$(COMPOSE) run --rm shipment-documents-bucket
@@ -208,7 +209,7 @@ compose-logs:
 
 sqs-backlog:
 	@set -euo pipefail; \
-	for queue in $(PAYMENTS_APPROVED_QUEUE_URL) $(PAYMENTS_APPROVED_DLQ_URL) $(ORDERS_CONFIRMED_QUEUE_URL) $(ORDERS_CONFIRMED_DLQ_URL) $(FULFILLMENT_COMMITMENT_QUEUE_URL) $(FULFILLMENT_COMMITMENT_DLQ_URL) $(BUYER_TRACKING_QUEUE_URL) $(BUYER_TRACKING_DLQ_URL) $(CUSTOMER_EXPERIENCE_QUEUE_URL) $(CUSTOMER_EXPERIENCE_DLQ_URL); do \
+	for queue in $(PAYMENTS_APPROVED_QUEUE_URL) $(PAYMENTS_APPROVED_DLQ_URL) $(ORDERS_CONFIRMED_QUEUE_URL) $(ORDERS_CONFIRMED_DLQ_URL) $(FULFILLMENT_COMMITMENT_QUEUE_URL) $(FULFILLMENT_COMMITMENT_DLQ_URL) $(FULFILLMENT_FAILED_ORDER_QUEUE_URL) $(FULFILLMENT_FAILED_ORDER_DLQ_URL) $(BUYER_TRACKING_QUEUE_URL) $(BUYER_TRACKING_DLQ_URL) $(CUSTOMER_EXPERIENCE_QUEUE_URL) $(CUSTOMER_EXPERIENCE_DLQ_URL); do \
 		name=$${queue##*/}; \
 		printf '%s\n' "==> $$name"; \
 		$(CURL) -fsS -X POST "$(MINISTACK_ENDPOINT)/" \

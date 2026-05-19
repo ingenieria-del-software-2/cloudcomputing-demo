@@ -111,6 +111,14 @@ export interface TrackingAcceptedResponse {
   timeline_length: number;
 }
 
+export interface QueuedEventResponse {
+  event_id: string;
+  event_name: string;
+  queued: true;
+  queue: string;
+  version: string;
+}
+
 interface TrackingUpdateResult {
   record: TrackingRecord;
   duplicate: boolean;
@@ -250,6 +258,67 @@ export class TrackingService implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       this.recordDynamoDbDuration('query', 'failure', version, startedAt);
       throw error;
+    }
+  }
+
+  shouldQueueInternalEvents(): boolean {
+    return (
+      this.config.get<string>('HTTP_EVENT_INGRESS_MODE', 'direct') === 'sqs'
+    );
+  }
+
+  async enqueueTrackingEvent(
+    command: HandleTrackingEventCommand,
+  ): Promise<QueuedEventResponse> {
+    const version = this.config.get<string>('SERVICE_VERSION', 'v1');
+
+    try {
+      await this.sqs().send(
+        new SendMessageCommand({
+          QueueUrl: this.inputQueueUrl(),
+          MessageBody: JSON.stringify(command.event),
+        }),
+      );
+      this.metrics.recordSqsPublish('success', version, this.inputQueueName());
+      void this.refreshQueueDepthMetrics(version);
+      this.logger.info('tracking_event_enqueued', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        buyer_id: stringValue(command.event.payload.buyer_id),
+        queue: this.inputQueueName(),
+        result: 'EVENT_ENQUEUED',
+      });
+
+      return {
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        queued: true,
+        queue: this.inputQueueName(),
+        version,
+      };
+    } catch (error) {
+      this.metrics.recordSqsPublish('failure', version, this.inputQueueName());
+      void this.refreshQueueDepthMetrics(version);
+      this.logger.error('tracking_event_enqueue_failed', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        buyer_id: stringValue(command.event.payload.buyer_id),
+        queue: this.inputQueueName(),
+        business_error_code: 'TRACKING_EVENT_QUEUE_FAILED',
+        result: 'TRACKING_EVENT_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+      throw new ServiceUnavailableException({
+        status: 503,
+        code: 'TRACKING_EVENT_QUEUE_FAILED',
+        message: 'Tracking event could not be queued',
+      });
     }
   }
 

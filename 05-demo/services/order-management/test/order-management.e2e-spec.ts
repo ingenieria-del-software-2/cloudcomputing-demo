@@ -43,6 +43,10 @@ const paymentQueueUrl =
   'http://localhost:4566/000000000000/payments-approved-intake';
 const paymentDlqArn =
   'arn:aws:sqs:us-east-1:000000000000:payments-approved-dlq';
+const fulfillmentFailedQueueUrl =
+  'http://localhost:4566/000000000000/fulfillment-failed-order-intake';
+const fulfillmentFailedDlqArn =
+  'arn:aws:sqs:us-east-1:000000000000:fulfillment-failed-order-dlq';
 const databaseUrl =
   process.env.DATABASE_URL ??
   'postgresql://order:order@localhost:15432/order_management';
@@ -65,6 +69,8 @@ describe('order-management ATDD', () => {
       AWS_SECRET_ACCESS_KEY: 'test',
       GIT_COMMIT: 'e2e',
       DATABASE_URL: databaseUrl,
+      FULFILLMENT_FAILED_INTAKE_CONSUMER_ENABLED: 'true',
+      FULFILLMENT_FAILED_INTAKE_SQS_QUEUE_URL: fulfillmentFailedQueueUrl,
       IDEMPOTENCY_ENABLED: 'true',
       PAYMENT_INTAKE_CONSUMER_ENABLED: 'true',
       PAYMENT_INTAKE_SQS_QUEUE_URL: paymentQueueUrl,
@@ -106,6 +112,20 @@ describe('order-management ATDD', () => {
         Attributes: {
           RedrivePolicy: JSON.stringify({
             deadLetterTargetArn: dlqArn,
+            maxReceiveCount: '3',
+          }),
+        },
+      }),
+    );
+    await sqs.send(
+      new CreateQueueCommand({ QueueName: 'fulfillment-failed-order-dlq' }),
+    );
+    await sqs.send(
+      new CreateQueueCommand({
+        QueueName: 'fulfillment-failed-order-intake',
+        Attributes: {
+          RedrivePolicy: JSON.stringify({
+            deadLetterTargetArn: fulfillmentFailedDlqArn,
             maxReceiveCount: '3',
           }),
         },
@@ -391,6 +411,49 @@ describe('order-management ATDD', () => {
     expect(typeof event.payload.cancellation_requested_at).toBe('string');
   });
 
+  it('queues fulfillment failure HTTP ingress in local SQS before cancelling', async () => {
+    const previousMode = process.env.FULFILLMENT_FAILED_HTTP_INGRESS_MODE;
+    process.env.FULFILLMENT_FAILED_HTTP_INGRESS_MODE = 'sqs';
+
+    try {
+      const paymentId = `pay_cancel_sqs_${Date.now()}`;
+      const created = await postPayment(
+        paymentId,
+        'cart_cancel_sqs_001',
+      ).expect(201);
+      const order = created.body as OrderResponse;
+      await receiveEvent('orders.order_confirmed.v1', order.order_id);
+
+      await http()
+        .post('/internal/fulfillment/failed')
+        .set({ 'x-request-id': `req_cancel_sqs_${paymentId}` })
+        .send(fulfillmentFailedEvent(order.order_id))
+        .expect(202)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            event_name: 'fulfillment.commitment_failed.v1',
+            queued: true,
+            queue: 'fulfillment-failed-order-intake',
+            version: 'v1',
+          });
+        });
+
+      await expect(
+        waitForOrderStatus(order.order_id, 'ORDER_CANCELLED'),
+      ).resolves.toBe('ORDER_CANCELLED');
+      await receiveEvent(
+        'orders.order_cancellation_requested.v1',
+        order.order_id,
+      );
+    } finally {
+      if (previousMode === undefined) {
+        delete process.env.FULFILLMENT_FAILED_HTTP_INGRESS_MODE;
+      } else {
+        process.env.FULFILLMENT_FAILED_HTTP_INGRESS_MODE = previousMode;
+      }
+    }
+  });
+
   it('persists the order and republishes the outbox when SQS is temporarily unavailable', async () => {
     const paymentId = `pay_outbox_${Date.now()}`;
     const failingConfig = new ConfigService({
@@ -630,6 +693,24 @@ describe('order-management ATDD', () => {
     );
 
     return result.rows[0]?.status;
+  }
+
+  async function waitForOrderStatus(
+    orderId: string,
+    expectedStatus: string,
+  ): Promise<string> {
+    const deadline = Date.now() + 5000;
+
+    while (Date.now() < deadline) {
+      const status = await dbOrderStatus(orderId);
+      if (status === expectedStatus) {
+        return status;
+      }
+
+      await sleep(100);
+    }
+
+    throw new Error(`${orderId} did not reach ${expectedStatus}`);
   }
 
   async function dbOrderItemCount(orderId: string): Promise<number> {

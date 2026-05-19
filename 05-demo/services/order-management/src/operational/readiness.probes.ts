@@ -127,6 +127,7 @@ export class SqsReadinessProbe implements ReadinessProbe {
     return [
       this.queueUrl(),
       this.config.get<string>('TRACKING_SQS_QUEUE_URL'),
+      this.config.get<string>('FULFILLMENT_FAILED_INTAKE_SQS_QUEUE_URL'),
     ].filter((queueUrl): queueUrl is string => Boolean(queueUrl));
   }
 

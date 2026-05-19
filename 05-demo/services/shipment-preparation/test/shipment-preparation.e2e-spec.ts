@@ -558,6 +558,40 @@ describe('shipment-preparation ATDD', () => {
     await expect(dbShipmentStatus(orderId)).resolves.toBe('READY_TO_DISPATCH');
   });
 
+  it('queues HTTP-ingressed fulfillment commitments into local SQS before processing', async () => {
+    const previousMode = process.env.HTTP_EVENT_INGRESS_MODE;
+    process.env.HTTP_EVENT_INGRESS_MODE = 'sqs';
+
+    try {
+      const orderId = `ord_ship_http_sqs_${Date.now()}`;
+      await postCommitment(orderId)
+        .expect(202)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            event_name: 'fulfillment.commitment_confirmed.v1',
+            queued: true,
+            queue: 'fulfillment-commitment-intake',
+            version: 'v1',
+          });
+        });
+
+      const event = await receiveEvent(
+        'shipping.shipment_ready_to_dispatch.v1',
+        orderId,
+      );
+      expect(event.payload.order_id).toBe(orderId);
+      await expect(dbShipmentStatus(orderId)).resolves.toBe(
+        'READY_TO_DISPATCH',
+      );
+    } finally {
+      if (previousMode === undefined) {
+        delete process.env.HTTP_EVENT_INGRESS_MODE;
+      } else {
+        process.env.HTTP_EVENT_INGRESS_MODE = previousMode;
+      }
+    }
+  });
+
   function postCommitment(orderId: string) {
     return http()
       .post('/internal/events')

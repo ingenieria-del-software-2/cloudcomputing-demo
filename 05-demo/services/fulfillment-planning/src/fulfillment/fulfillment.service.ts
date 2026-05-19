@@ -89,6 +89,14 @@ export interface FulfillmentAcceptedResponse {
   reason?: string;
 }
 
+export interface QueuedEventResponse {
+  event_id: string;
+  event_name: string;
+  queued: true;
+  queue: string;
+  version: string;
+}
+
 interface CommitmentCreateResult {
   commitment: FulfillmentCommitmentRecord;
   duplicate: boolean;
@@ -250,6 +258,65 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     );
 
     return result.rows[0] ? toInventoryItem(result.rows[0]) : undefined;
+  }
+
+  shouldQueueInternalEvents(): boolean {
+    return (
+      this.config.get<string>('HTTP_EVENT_INGRESS_MODE', 'direct') === 'sqs'
+    );
+  }
+
+  async enqueueOrderConfirmedEvent(
+    command: HandleOrderConfirmedCommand,
+  ): Promise<QueuedEventResponse> {
+    const version = this.config.get<string>('SERVICE_VERSION', 'v1');
+
+    try {
+      await this.client().send(
+        new SendMessageCommand({
+          QueueUrl: this.inputQueueUrl(),
+          MessageBody: JSON.stringify(command.event),
+        }),
+      );
+      this.metrics.recordSqsPublish('success', version, this.inputQueueName());
+      this.logger.info('order_confirmed_event_enqueued', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        payment_id: command.event.payload.payment_id,
+        queue: this.inputQueueName(),
+        result: 'EVENT_ENQUEUED',
+      });
+
+      return {
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        queued: true,
+        queue: this.inputQueueName(),
+        version,
+      };
+    } catch (error) {
+      this.metrics.recordSqsPublish('failure', version, this.inputQueueName());
+      this.logger.error('order_confirmed_event_enqueue_failed', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        payment_id: command.event.payload.payment_id,
+        queue: this.inputQueueName(),
+        business_error_code: 'ORDER_CONFIRMED_EVENT_QUEUE_FAILED',
+        result: 'ORDER_CONFIRMED_EVENT_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+      throw new ServiceUnavailableException({
+        status: 503,
+        code: 'ORDER_CONFIRMED_EVENT_QUEUE_FAILED',
+        message: 'Order confirmed event could not be queued',
+      });
+    }
   }
 
   private async createOrReplayCommitment(
@@ -520,6 +587,53 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     source: OrderConfirmedEventDto,
   ): OutboxEvent[] {
     const outcome = this.outcomeEvent(commitment, source);
+    if (this.usesHttpEventTargets()) {
+      const events: OutboxEvent[] = [];
+
+      if (outcome.event_name === 'fulfillment.commitment_confirmed.v1') {
+        events.push({
+          event: outcome,
+          queueName: this.shipmentTargetName(),
+          queueUrl: this.shipmentTargetUrl(),
+        });
+      }
+
+      if (outcome.event_name === 'fulfillment.commitment_failed.v1') {
+        const orderTargetUrl = this.orderFulfillmentFailedTargetUrl();
+        if (orderTargetUrl) {
+          events.push({
+            event: outcome,
+            queueName: this.orderFulfillmentFailedTargetName(),
+            queueUrl: orderTargetUrl,
+          });
+        }
+      }
+
+      const trackingTargetUrl = this.trackingTargetUrl();
+      if (trackingTargetUrl) {
+        events.push({
+          event: outcome,
+          queueName: this.trackingTargetName(),
+          queueUrl: trackingTargetUrl,
+        });
+      }
+
+      const inventoryQueueUrl = this.config.get<string>(
+        'INVENTORY_SQS_QUEUE_URL',
+      );
+      if (inventoryQueueUrl) {
+        for (const event of this.inventoryEvents(commitment, source)) {
+          events.push({
+            event,
+            queueName: this.inventoryQueueName(),
+            queueUrl: inventoryQueueUrl,
+          });
+        }
+      }
+
+      return events;
+    }
+
     const events: OutboxEvent[] = [
       {
         event: outcome,
@@ -986,12 +1100,16 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     version: string,
   ): Promise<void> {
     try {
-      await this.client().send(
-        new SendMessageCommand({
-          QueueUrl: row.queue_url,
-          MessageBody: JSON.stringify(row.payload),
-        }),
-      );
+      if (isHttpEventTarget(row.queue_url)) {
+        await this.postOutboxEvent(row);
+      } else {
+        await this.client().send(
+          new SendMessageCommand({
+            QueueUrl: row.queue_url,
+            MessageBody: JSON.stringify(row.payload),
+          }),
+        );
+      }
       await this.db().query(
         `UPDATE event_outbox
          SET status = 'PUBLISHED', published_at = NOW(), updated_at = NOW()
@@ -1020,6 +1138,25 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
         result: 'FULFILLMENT_EVENT_QUEUE_FAILED',
         error_message: error instanceof Error ? error.message : 'unknown error',
       });
+    }
+  }
+
+  private async postOutboxEvent(row: OutboxRow): Promise<void> {
+    const response = await fetch(row.queue_url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': row.payload.event_id,
+        'x-correlation-id': row.payload.correlation_id,
+      },
+      body: JSON.stringify(row.payload),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `HTTP ${response.status} from ${row.queue_url}: ${body.slice(0, 300)}`,
+      );
     }
   }
 
@@ -1287,12 +1424,54 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private shipmentTargetUrl(): string {
+    return (
+      this.config.get<string>('SHIPMENT_EVENTS_URL') ?? this.outputQueueUrl()
+    );
+  }
+
+  private shipmentTargetName(): string {
+    return this.config.get<string>('SHIPMENT_EVENTS_URL')
+      ? 'shipment-preparation-http'
+      : this.outputQueueName();
+  }
+
   private trackingQueueUrl(): string | undefined {
     return this.config.get<string>('TRACKING_SQS_QUEUE_URL');
   }
 
   private trackingQueueName(): string {
     return this.trackingQueueUrl()?.split('/').pop() ?? 'buyer-tracking-events';
+  }
+
+  private trackingTargetUrl(): string | undefined {
+    return (
+      this.config.get<string>('TRACKING_EVENTS_URL') ?? this.trackingQueueUrl()
+    );
+  }
+
+  private trackingTargetName(): string {
+    return this.config.get<string>('TRACKING_EVENTS_URL')
+      ? 'buyer-order-tracking-http'
+      : this.trackingQueueName();
+  }
+
+  private orderFulfillmentFailedTargetUrl(): string | undefined {
+    return this.config.get<string>('ORDER_FULFILLMENT_FAILED_URL');
+  }
+
+  private orderFulfillmentFailedTargetName(): string {
+    return this.orderFulfillmentFailedTargetUrl()
+      ? 'order-management-http'
+      : 'order-management';
+  }
+
+  private usesHttpEventTargets(): boolean {
+    return Boolean(
+      this.config.get<string>('SHIPMENT_EVENTS_URL') ??
+      this.config.get<string>('TRACKING_EVENTS_URL') ??
+      this.config.get<string>('ORDER_FULFILLMENT_FAILED_URL'),
+    );
   }
 
   private inventoryQueueUrl(): string {
@@ -1574,6 +1753,10 @@ function isOrderConfirmedEvent(
     typeof (value as { payload?: { order_id?: unknown } }).payload?.order_id ===
       'string'
   );
+}
+
+function isHttpEventTarget(url: string): boolean {
+  return /^https?:\/\//.test(url) && url.includes('/internal/');
 }
 
 function deliveryDate(daysFromNow: number): string {

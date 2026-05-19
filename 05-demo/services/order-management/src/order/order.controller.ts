@@ -40,6 +40,15 @@ export class OrderController {
     @Headers('x-request-id') requestId: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
+    if (this.orders.shouldQueueFulfillmentFailedEvents()) {
+      const result = await this.orders.enqueueFulfillmentFailedEvent({
+        event: body,
+        requestId: requestId ?? body.event_id,
+      });
+      response.status(HttpStatus.ACCEPTED);
+      return result;
+    }
+
     const result = await this.orders.cancelAfterFulfillmentFailed({
       event: body,
       requestId: requestId ?? body.event_id,

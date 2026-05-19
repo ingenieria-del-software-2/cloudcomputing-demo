@@ -124,6 +124,26 @@ services:
         --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:fulfillment-commitment-dlq","maxReceiveCount":"3"}'
         >/dev/null
 
+  fulfillment-failed-order-queue:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=fulfillment-failed-order-dlq&Version=2012-11-05'
+        >/dev/null;
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=fulfillment-failed-order-intake&Version=2012-11-05'
+        --data 'Attribute.1.Name=RedrivePolicy'
+        --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:fulfillment-failed-order-dlq","maxReceiveCount":"3"}'
+        >/dev/null
+
   buyer-tracking-queue:
     <<: *curl-one-shot
     depends_on:
@@ -303,6 +323,8 @@ services:
         condition: service_completed_successfully
       orders-confirmed-queue:
         condition: service_completed_successfully
+      fulfillment-failed-order-queue:
+        condition: service_completed_successfully
       buyer-tracking-queue:
         condition: service_completed_successfully
       order-postgres:
@@ -317,6 +339,10 @@ services:
       PAYMENT_INTAKE_SQS_QUEUE_URL: http://ministack:4566/000000000000/payments-approved-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
       TRACKING_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
+      FULFILLMENT_EVENTS_URL: http://fulfillment-planning:3000/internal/events
+      TRACKING_EVENTS_URL: http://buyer-order-tracking:3000/internal/events
+      FULFILLMENT_FAILED_HTTP_INGRESS_MODE: sqs
+      FULFILLMENT_FAILED_INTAKE_SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-failed-order-intake
       IDEMPOTENCY_ENABLED: "${IDEMPOTENCY_ENABLED:-true}"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:
@@ -347,9 +373,13 @@ services:
       PORT: "3000"
       SERVICE_VERSION: v1
       DATABASE_URL: postgresql://fulfillment:fulfillment@fulfillment-postgres:5432/fulfillment_planning
+      HTTP_EVENT_INGRESS_MODE: sqs
       INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-commitment-intake
       TRACKING_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
+      SHIPMENT_EVENTS_URL: http://shipment-preparation:3000/internal/events
+      TRACKING_EVENTS_URL: http://buyer-order-tracking:3000/internal/events
+      ORDER_FULFILLMENT_FAILED_URL: http://order-management:3000/internal/fulfillment/failed
       PROMESA_EXPRESS_ENABLED: "${PROMESA_EXPRESS_ENABLED:-true}"
       PROMESA_EXPRESS_LATENCY_MS: "${PROMESA_EXPRESS_LATENCY_MS:-750}"
       PROMESA_EXPRESS_ERROR_RATE: "${PROMESA_EXPRESS_ERROR_RATE:-0.25}"
@@ -383,8 +413,10 @@ services:
       PORT: "3000"
       SERVICE_VERSION: v1
       DATABASE_URL: postgresql://shipment:shipment@shipment-postgres:5432/shipment_preparation
+      HTTP_EVENT_INGRESS_MODE: sqs
       INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-commitment-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
+      TRACKING_EVENTS_URL: http://buyer-order-tracking:3000/internal/events
       SHIPMENT_DOCUMENTS_BUCKET: seller-dispatch-documents-lab
       S3_BAD_KEY_ENABLED: "false"
       S3_PUT_OBJECT_ALLOWED: "${S3_PUT_OBJECT_ALLOWED:-true}"
@@ -419,6 +451,7 @@ services:
       SERVICE_VERSION: v1
       TRACKING_TABLE_NAME: buyer-visible-order-state
       BUYER_ORDERS_INDEX_NAME: buyer_id-order_id-index
+      HTTP_EVENT_INGRESS_MODE: sqs
       INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
       SQS_QUEUE_URL: http://ministack:4566/000000000000/customer-experience-events
       TRACKING_CONSUMER_ENABLED: "true"

@@ -16,6 +16,7 @@ Included here:
 - Docker Compose local runtime
 - MiniStack SQS, S3-compatible bucket, and DynamoDB-compatible API
 - PostgreSQL containers for service-owned relational state
+- V3 HTTP event forwarding: producers call the next service's `/internal/events`, and the receiver enqueues into its local SQS before workers process it
 - `/metrics` endpoints and optional local Prometheus HTTP queries
 - controlled incidents for Promesa Express, document writes, tracking staleness, duplicates, and CPU distraction
 
@@ -159,6 +160,16 @@ Expected evidence:
 - `s3_put_object_total{status="failure",reason="DOCUMENT_UPLOAD_ACCESS_DENIED"}` increases.
 - Retry emits `shipping.dispatch_document_available.v1` and `shipping.shipment_ready_to_dispatch.v1`.
 - Tracking moves from `DISPATCH_BLOCKED` to `READY_TO_DISPATCH` after retry.
+
+## Compensation - Fulfillment Failed Cancels Order
+
+When fulfillment cannot reserve stock, `fulfillment-planning` posts `fulfillment.commitment_failed.v1` to `order-management` through `POST /internal/fulfillment/failed`. In the Compose path, `order-management` enqueues that event into `fulfillment-failed-order-intake` and its local worker marks the order as `ORDER_CANCELLED` before publishing the buyer-visible cancellation update.
+
+Expected evidence:
+
+- `fulfillment.commitment_failed.v1` is emitted for stock shortage.
+- `order-management` reaches `ORDER_CANCELLED` for the affected order.
+- `buyer-order-tracking` shows `CANCELLED` in the buyer timeline.
 
 ## Stage 6 - Tracking Stale / User-Facing Truth
 

@@ -91,6 +91,14 @@ export interface ShipmentAcceptedResponse {
   reason?: string;
 }
 
+export interface QueuedEventResponse {
+  event_id: string;
+  event_name: string;
+  queued: true;
+  queue: string;
+  version: string;
+}
+
 interface ShipmentCreateResult {
   shipment: ShipmentRecord;
   documents: DispatchDocumentRecord[];
@@ -263,6 +271,67 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     );
 
     return result.rows.map(toDocument);
+  }
+
+  shouldQueueInternalEvents(): boolean {
+    return (
+      this.config.get<string>('HTTP_EVENT_INGRESS_MODE', 'direct') === 'sqs'
+    );
+  }
+
+  async enqueueCommitmentConfirmedEvent(
+    command: HandleCommitmentCommand,
+  ): Promise<QueuedEventResponse> {
+    const version = this.config.get<string>('SERVICE_VERSION', 'v1');
+
+    try {
+      await this.sqs().send(
+        new SendMessageCommand({
+          QueueUrl: this.inputQueueUrl(),
+          MessageBody: JSON.stringify(command.event),
+        }),
+      );
+      this.metrics.recordSqsPublish('success', version, this.inputQueueName());
+      this.logger.info('fulfillment_commitment_event_enqueued', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        fulfillment_commitment_id:
+          command.event.payload.fulfillment_commitment_id,
+        queue: this.inputQueueName(),
+        result: 'EVENT_ENQUEUED',
+      });
+
+      return {
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        queued: true,
+        queue: this.inputQueueName(),
+        version,
+      };
+    } catch (error) {
+      this.metrics.recordSqsPublish('failure', version, this.inputQueueName());
+      this.logger.error('fulfillment_commitment_event_enqueue_failed', {
+        request_id: command.requestId,
+        event_id: command.event.event_id,
+        event_name: command.event.event_name,
+        correlation_id: command.event.correlation_id,
+        order_id: command.event.payload.order_id,
+        fulfillment_commitment_id:
+          command.event.payload.fulfillment_commitment_id,
+        queue: this.inputQueueName(),
+        business_error_code: 'FULFILLMENT_COMMITMENT_EVENT_QUEUE_FAILED',
+        result: 'FULFILLMENT_COMMITMENT_EVENT_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+      throw new ServiceUnavailableException({
+        status: 503,
+        code: 'FULFILLMENT_COMMITMENT_EVENT_QUEUE_FAILED',
+        message: 'Fulfillment commitment event could not be queued',
+      });
+    }
   }
 
   async checkBucketReady(): Promise<boolean> {
@@ -760,6 +829,13 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     createdAt: string,
   ): Promise<void> {
     for (const event of events) {
+      const targetUrl = this.outputTargetUrl();
+      if (
+        isHttpEventTarget(targetUrl) &&
+        !isShipmentTrackingEvent(event.event_name)
+      ) {
+        continue;
+      }
       await client.query(
         `INSERT INTO event_outbox (
            outbox_id, event_id, event_name, queue_name, queue_url, payload,
@@ -769,8 +845,8 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
           newId('out'),
           event.event_id,
           event.event_name,
-          this.outputQueueName(),
-          this.outputQueueUrl(),
+          this.outputTargetName(),
+          targetUrl,
           JSON.stringify(event),
           createdAt,
         ],
@@ -1291,12 +1367,16 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     version: string,
   ): Promise<void> {
     try {
-      await this.sqs().send(
-        new SendMessageCommand({
-          QueueUrl: row.queue_url,
-          MessageBody: JSON.stringify(row.payload),
-        }),
-      );
+      if (isHttpEventTarget(row.queue_url)) {
+        await this.postOutboxEvent(row);
+      } else {
+        await this.sqs().send(
+          new SendMessageCommand({
+            QueueUrl: row.queue_url,
+            MessageBody: JSON.stringify(row.payload),
+          }),
+        );
+      }
       await this.db().query(
         `UPDATE event_outbox
          SET status = 'PUBLISHED', published_at = NOW(), updated_at = NOW()
@@ -1325,6 +1405,25 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         result: 'SHIPMENT_EVENT_QUEUE_FAILED',
         error_message: error instanceof Error ? error.message : 'unknown error',
       });
+    }
+  }
+
+  private async postOutboxEvent(row: OutboxRow): Promise<void> {
+    const response = await fetch(row.queue_url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': row.payload.event_id,
+        'x-correlation-id': row.payload.correlation_id,
+      },
+      body: JSON.stringify(row.payload),
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(
+        `HTTP ${response.status} from ${row.queue_url}: ${body.slice(0, 300)}`,
+      );
     }
   }
 
@@ -1553,6 +1652,18 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
 
   private outputQueueName(): string {
     return this.outputQueueUrl().split('/').pop() ?? 'buyer-tracking-events';
+  }
+
+  private outputTargetUrl(): string {
+    return (
+      this.config.get<string>('TRACKING_EVENTS_URL') ?? this.outputQueueUrl()
+    );
+  }
+
+  private outputTargetName(): string {
+    return this.config.get<string>('TRACKING_EVENTS_URL')
+      ? 'buyer-order-tracking-http'
+      : this.outputQueueName();
   }
 
   private bucketName(): string {
@@ -1924,6 +2035,17 @@ function isFulfillmentCommitmentEvent(
       'string' &&
     typeof (value as { payload?: { fulfillment_commitment_id?: unknown } })
       .payload?.fulfillment_commitment_id === 'string'
+  );
+}
+
+function isHttpEventTarget(url: string): boolean {
+  return /^https?:\/\//.test(url) && url.includes('/internal/');
+}
+
+function isShipmentTrackingEvent(eventName: string): boolean {
+  return (
+    eventName === 'shipping.shipment_ready_to_dispatch.v1' ||
+    eventName === 'shipping.dispatch_blocked.v1'
   );
 }
 
