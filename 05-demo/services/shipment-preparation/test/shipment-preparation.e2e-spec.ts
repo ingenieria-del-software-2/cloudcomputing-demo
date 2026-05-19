@@ -398,6 +398,60 @@ describe('shipment-preparation ATDD', () => {
     );
   });
 
+  it('retries blocked shipment documents after S3 permission is restored', async () => {
+    const orderId = `ord_ship_retry_denied_${Date.now()}`;
+    process.env.S3_PUT_OBJECT_ALLOWED = 'false';
+
+    const created = await postCommitment(orderId).expect(202);
+    const shipment = created.body as ShipmentResponse;
+    expect(shipment.status).toBe('DISPATCH_BLOCKED');
+    await receiveEvent('shipping.dispatch_blocked.v1', orderId);
+
+    process.env.S3_PUT_OBJECT_ALLOWED = 'true';
+
+    const retried = await http()
+      .post(`/shipments/${shipment.shipment_id}/retry-documents`)
+      .set({ 'x-request-id': `req_retry_${orderId}` })
+      .expect(202);
+    expect(retried.body as ShipmentResponse).toMatchObject({
+      order_id: orderId,
+      shipment_id: shipment.shipment_id,
+      status: 'READY_TO_DISPATCH',
+      duplicate: false,
+    });
+
+    const documents = await http()
+      .get(`/shipments/${shipment.shipment_id}/documents`)
+      .expect(200);
+    const shipmentDocuments = (
+      documents.body as { documents: ShipmentDocumentResponse[] }
+    ).documents;
+    expect(shipmentDocuments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          document_type: 'SHIPPING_LABEL',
+          status: 'AVAILABLE',
+        }),
+        expect.objectContaining({
+          document_type: 'DISPATCH_INSTRUCTIONS',
+          status: 'AVAILABLE',
+        }),
+      ]),
+    );
+    await expect(
+      headObject(requireDocument(shipmentDocuments, 'SHIPPING_LABEL').s3_key),
+    ).resolves.toBe(true);
+    await expect(
+      headObject(
+        requireDocument(shipmentDocuments, 'DISPATCH_INSTRUCTIONS').s3_key,
+      ),
+    ).resolves.toBe(true);
+
+    await receiveEvent('shipping.dispatch_document_available.v1', orderId);
+    await receiveEvent('shipping.shipment_ready_to_dispatch.v1', orderId);
+    await expect(dbShipmentStatus(orderId)).resolves.toBe('READY_TO_DISPATCH');
+  });
+
   it('blocks dispatch when generated S3 document keys are invalid', async () => {
     const orderId = `ord_ship_bad_key_${Date.now()}`;
     process.env.S3_BAD_KEY_ENABLED = 'true';

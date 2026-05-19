@@ -44,6 +44,16 @@ interface HandleCommitmentCommand {
   requestId: string;
 }
 
+interface RetryShipmentDocumentsCommand {
+  shipmentId: string;
+  requestId: string;
+}
+
+interface ShipmentEventSource {
+  event_id: string;
+  correlation_id: string;
+}
+
 export interface DispatchDocumentRecord {
   document_id: string;
   shipment_id: string;
@@ -63,6 +73,8 @@ export interface ShipmentRecord {
   seller_cutoff_at: string;
   ready_to_dispatch_at?: string;
   block_reason?: string;
+  correlation_id?: string;
+  source_event_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -83,6 +95,14 @@ interface ShipmentCreateResult {
   documentUploadFailed: boolean;
 }
 
+interface ShipmentRetryResult {
+  shipment: ShipmentRecord;
+  documents: DispatchDocumentRecord[];
+  noChanges: boolean;
+  documentUploadFailed: boolean;
+  statusBefore: ShipmentStatus;
+}
+
 interface ShipmentRow extends QueryResultRow {
   shipment_id: string;
   order_id: string;
@@ -92,6 +112,8 @@ interface ShipmentRow extends QueryResultRow {
   seller_cutoff_at: Date | string;
   ready_to_dispatch_at?: Date | string;
   block_reason?: string;
+  correlation_id?: string;
+  source_event_id?: string;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -241,6 +263,59 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async retryShipmentDocuments(
+    command: RetryShipmentDocumentsCommand,
+  ): Promise<ShipmentAcceptedResponse | undefined> {
+    const startedAt = performance.now();
+    const version = this.config.get<string>('SERVICE_VERSION', 'v1');
+
+    try {
+      const result = await this.retryBlockedShipmentDocuments(
+        command.shipmentId,
+      );
+
+      if (!result) {
+        return undefined;
+      }
+
+      if (result.noChanges) {
+        this.logger.info('shipment_documents_retry_not_needed', {
+          request_id: command.requestId,
+          order_id: result.shipment.order_id,
+          shipment_id: result.shipment.shipment_id,
+          status_before: result.statusBefore,
+          status_after: result.shipment.status,
+          duration_ms: durationMs(startedAt),
+          result: 'SHIPMENT_DOCUMENTS_RETRY_NOT_NEEDED',
+        });
+        return response(result.shipment, true, version);
+      }
+
+      await this.publishRetryOutcome(command, result, version, startedAt);
+      return response(result.shipment, false, version);
+    } catch (error) {
+      this.metrics.recordShipment('processing_failed', version);
+      this.metrics.observeShipmentDuration(
+        'processing_failed',
+        version,
+        durationSeconds(startedAt),
+      );
+      this.logger.error('shipment_documents_retry_failed', {
+        request_id: command.requestId,
+        shipment_id: command.shipmentId,
+        business_error_code: processingFailureCode(error),
+        duration_ms: durationMs(startedAt),
+        result: 'SHIPMENT_DOCUMENTS_RETRY_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+      throw new ServiceUnavailableException({
+        status: 503,
+        code: 'SHIPMENT_DOCUMENT_RETRY_FAILED',
+        message: 'Shipment documents could not be retried',
+      });
+    }
+  }
+
   private async createOrReplayShipment(
     event: FulfillmentCommitmentEventDto,
   ): Promise<ShipmentCreateResult> {
@@ -287,6 +362,8 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         sellerCutoffAt: sellerCutoff,
         readyToDispatchAt: status === 'READY_TO_DISPATCH' ? now : undefined,
         blockReason: blockReason(uploadSucceeded, cutoffExpired, uploadResults),
+        correlationId: event.correlation_id,
+        sourceEventId: event.event_id,
         createdAt: now,
       });
       const documents: DispatchDocumentRecord[] = [];
@@ -337,6 +414,94 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async retryBlockedShipmentDocuments(
+    shipmentId: string,
+  ): Promise<ShipmentRetryResult | undefined> {
+    const client = await this.db().connect();
+
+    try {
+      await client.query('BEGIN');
+
+      const existing = await this.findShipmentByIdForUpdate(client, shipmentId);
+      if (!existing) {
+        await client.query('COMMIT');
+        return undefined;
+      }
+
+      const documents = await this.findDocumentsByShipmentIdForUpdate(
+        client,
+        shipmentId,
+      );
+      const failedDocuments = documents.filter(
+        (document) => document.status === 'UPLOAD_FAILED',
+      );
+
+      if (
+        existing.status !== 'DISPATCH_BLOCKED' ||
+        failedDocuments.length === 0
+      ) {
+        await client.query('COMMIT');
+        return {
+          shipment: existing,
+          documents,
+          noChanges: true,
+          documentUploadFailed: false,
+          statusBefore: existing.status,
+        };
+      }
+
+      const plannedDocuments = failedDocuments.map((document) =>
+        retryPlannedDocument(existing, document),
+      );
+      const uploadResults = await this.uploadDocuments(plannedDocuments);
+      const uploadSucceeded = uploadResults.every((result) => result.ok);
+      const now = new Date().toISOString();
+      const cutoffExpired = uploadSucceeded
+        ? isCutoffExpired(existing.seller_cutoff_at, now)
+        : false;
+      const status: ShipmentStatus =
+        uploadSucceeded && !cutoffExpired
+          ? 'READY_TO_DISPATCH'
+          : 'DISPATCH_BLOCKED';
+
+      for (const [index, document] of failedDocuments.entries()) {
+        if (uploadResults[index]?.ok) {
+          await this.updateDocumentStatus(
+            client,
+            document.document_id,
+            'AVAILABLE',
+          );
+        }
+      }
+
+      const shipment = await this.updateShipmentStatus(client, {
+        shipmentId,
+        status,
+        readyToDispatchAt: status === 'READY_TO_DISPATCH' ? now : undefined,
+        blockReason: blockReason(uploadSucceeded, cutoffExpired, uploadResults),
+        updatedAt: now,
+      });
+      const updatedDocuments = await this.findDocumentsByShipmentIdForUpdate(
+        client,
+        shipmentId,
+      );
+
+      await client.query('COMMIT');
+      return {
+        shipment,
+        documents: updatedDocuments,
+        noChanges: false,
+        documentUploadFailed: !uploadSucceeded,
+        statusBefore: existing.status,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   private async findShipmentByOrderId(
     orderId: string,
   ): Promise<ShipmentRecord | undefined> {
@@ -360,6 +525,34 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     return result.rows[0] ? toShipment(result.rows[0]) : undefined;
   }
 
+  private async findShipmentByIdForUpdate(
+    client: PoolClient,
+    shipmentId: string,
+  ): Promise<ShipmentRecord | undefined> {
+    const result = await client.query<ShipmentRow>(
+      `${shipmentSelectSql()} WHERE shipment_id = $1 FOR UPDATE`,
+      [shipmentId],
+    );
+
+    return result.rows[0] ? toShipment(result.rows[0]) : undefined;
+  }
+
+  private async findDocumentsByShipmentIdForUpdate(
+    client: PoolClient,
+    shipmentId: string,
+  ): Promise<DispatchDocumentRecord[]> {
+    const result = await client.query<DocumentRow>(
+      `SELECT document_id, shipment_id, document_type, s3_bucket, s3_key, status, created_at
+       FROM dispatch_documents
+       WHERE shipment_id = $1
+       ORDER BY created_at ASC, document_type ASC
+       FOR UPDATE`,
+      [shipmentId],
+    );
+
+    return result.rows.map(toDocument);
+  }
+
   private async insertShipment(
     client: PoolClient,
     input: {
@@ -371,16 +564,20 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
       sellerCutoffAt: string;
       readyToDispatchAt?: string;
       blockReason?: string;
+      correlationId: string;
+      sourceEventId: string;
       createdAt: string;
     },
   ): Promise<ShipmentRecord> {
     const result = await client.query<ShipmentRow>(
       `INSERT INTO shipments (
          shipment_id, order_id, fulfillment_commitment_id, seller_id, status,
-         seller_cutoff_at, ready_to_dispatch_at, block_reason, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+         seller_cutoff_at, ready_to_dispatch_at, block_reason, correlation_id,
+         source_event_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
        RETURNING shipment_id, order_id, fulfillment_commitment_id, seller_id, status,
-                 seller_cutoff_at, ready_to_dispatch_at, block_reason, created_at, updated_at`,
+                 seller_cutoff_at, ready_to_dispatch_at, block_reason, correlation_id,
+                 source_event_id, created_at, updated_at`,
       [
         input.shipmentId,
         input.orderId,
@@ -390,11 +587,58 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         input.sellerCutoffAt,
         input.readyToDispatchAt,
         input.blockReason,
+        input.correlationId,
+        input.sourceEventId,
         input.createdAt,
       ],
     );
 
     return toShipment(result.rows[0]);
+  }
+
+  private async updateShipmentStatus(
+    client: PoolClient,
+    input: {
+      shipmentId: string;
+      status: ShipmentStatus;
+      readyToDispatchAt?: string;
+      blockReason?: string;
+      updatedAt: string;
+    },
+  ): Promise<ShipmentRecord> {
+    const result = await client.query<ShipmentRow>(
+      `UPDATE shipments
+       SET status = $2,
+           ready_to_dispatch_at = $3,
+           block_reason = $4,
+           updated_at = $5
+       WHERE shipment_id = $1
+       RETURNING shipment_id, order_id, fulfillment_commitment_id, seller_id, status,
+                 seller_cutoff_at, ready_to_dispatch_at, block_reason, correlation_id,
+                 source_event_id, created_at, updated_at`,
+      [
+        input.shipmentId,
+        input.status,
+        input.readyToDispatchAt,
+        input.blockReason,
+        input.updatedAt,
+      ],
+    );
+
+    return toShipment(result.rows[0]);
+  }
+
+  private async updateDocumentStatus(
+    client: PoolClient,
+    documentId: string,
+    status: DocumentStatus,
+  ): Promise<void> {
+    await client.query(
+      `UPDATE dispatch_documents
+       SET status = $2
+       WHERE document_id = $1`,
+      [documentId, status],
+    );
   }
 
   private async insertDocument(
@@ -638,6 +882,54 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private async publishRetryOutcome(
+    command: RetryShipmentDocumentsCommand,
+    result: ShipmentRetryResult,
+    version: string,
+    startedAt: number,
+  ): Promise<void> {
+    const source = shipmentEventSource(result.shipment);
+    const events = this.outcomeEvents(
+      result.shipment,
+      result.documents,
+      source,
+    );
+
+    for (const event of events) {
+      await this.publish(event, version);
+    }
+
+    const metricStatus = metricStatusFor(result.shipment.status);
+    this.metrics.recordShipment(metricStatus, version);
+    this.metrics.recordReadyBeforeCutoff(
+      version,
+      readyBeforeCutoff(result.shipment),
+    );
+    this.metrics.observeShipmentDuration(
+      metricStatus,
+      version,
+      durationSeconds(startedAt),
+    );
+
+    if (result.documentUploadFailed) {
+      this.metrics.recordDocumentFailure(version);
+    }
+
+    this.logger.info('shipment_documents_retry_completed', {
+      request_id: command.requestId,
+      event_id: events.at(-1)?.event_id,
+      event_name: events.at(-1)?.event_name,
+      correlation_id: source.correlation_id,
+      order_id: result.shipment.order_id,
+      shipment_id: result.shipment.shipment_id,
+      status_before: result.statusBefore,
+      status_after: result.shipment.status,
+      business_error_code: result.shipment.block_reason,
+      duration_ms: durationMs(startedAt),
+      result: 'SHIPMENT_DOCUMENTS_RETRIED',
+    });
+  }
+
   private acceptDuplicate(
     command: HandleCommitmentCommand,
     shipment: ShipmentRecord,
@@ -669,7 +961,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private outcomeEvents(
     shipment: ShipmentRecord,
     documents: DispatchDocumentRecord[],
-    source: FulfillmentCommitmentEventDto,
+    source: ShipmentEventSource,
   ): Array<EventEnvelope<Record<string, unknown>>> {
     if (shipment.status === 'DISPATCH_BLOCKED') {
       return [this.dispatchBlockedEvent(shipment, documents, source)];
@@ -684,7 +976,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private dispatchDocumentsAvailableEvent(
     shipment: ShipmentRecord,
     documents: DispatchDocumentRecord[],
-    source: FulfillmentCommitmentEventDto,
+    source: ShipmentEventSource,
   ): EventEnvelope<Record<string, unknown>> {
     const occurredAt = new Date().toISOString();
 
@@ -710,7 +1002,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private readyToDispatchEvent(
     shipment: ShipmentRecord,
     documents: DispatchDocumentRecord[],
-    source: FulfillmentCommitmentEventDto,
+    source: ShipmentEventSource,
   ): EventEnvelope<Record<string, unknown>> {
     const occurredAt = new Date().toISOString();
 
@@ -738,7 +1030,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private dispatchBlockedEvent(
     shipment: ShipmentRecord,
     documents: DispatchDocumentRecord[],
-    source: FulfillmentCommitmentEventDto,
+    source: ShipmentEventSource,
   ): EventEnvelope<Record<string, unknown>> {
     const occurredAt = new Date().toISOString();
 
@@ -891,6 +1183,12 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         updated_at TIMESTAMPTZ NOT NULL
       )
     `);
+    await this.db().query(
+      'ALTER TABLE shipments ADD COLUMN IF NOT EXISTS correlation_id TEXT',
+    );
+    await this.db().query(
+      'ALTER TABLE shipments ADD COLUMN IF NOT EXISTS source_event_id TEXT',
+    );
     await this.db().query(`
       CREATE TABLE IF NOT EXISTS dispatch_documents (
         document_id TEXT PRIMARY KEY,
@@ -1096,7 +1394,8 @@ class ShipmentEventPublishError extends Error {
 
 function shipmentSelectSql(): string {
   return `SELECT shipment_id, order_id, fulfillment_commitment_id, seller_id, status,
-                 seller_cutoff_at, ready_to_dispatch_at, block_reason, created_at, updated_at
+                 seller_cutoff_at, ready_to_dispatch_at, block_reason, correlation_id,
+                 source_event_id, created_at, updated_at
           FROM shipments`;
 }
 
@@ -1112,8 +1411,39 @@ function toShipment(row: ShipmentRow): ShipmentRecord {
       ? isoString(row.ready_to_dispatch_at)
       : undefined,
     block_reason: row.block_reason,
+    correlation_id: stringValue(row.correlation_id),
+    source_event_id: stringValue(row.source_event_id),
     created_at: isoString(row.created_at),
     updated_at: isoString(row.updated_at),
+  };
+}
+
+function retryPlannedDocument(
+  shipment: ShipmentRecord,
+  document: DispatchDocumentRecord,
+): PlannedDocument {
+  return {
+    documentId: document.document_id,
+    documentType: document.document_type,
+    bucket: document.s3_bucket,
+    key: document.s3_key,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      type: document.document_type,
+      shipment_id: shipment.shipment_id,
+      order_id: shipment.order_id,
+      seller_id: shipment.seller_id,
+      fulfillment_commitment_id: shipment.fulfillment_commitment_id,
+      regenerated_at: new Date().toISOString(),
+    }),
+  };
+}
+
+function shipmentEventSource(shipment: ShipmentRecord): ShipmentEventSource {
+  return {
+    event_id: shipment.source_event_id ?? `retry_${shipment.shipment_id}`,
+    correlation_id:
+      shipment.correlation_id ?? `shipment_retry_${shipment.shipment_id}`,
   };
 }
 

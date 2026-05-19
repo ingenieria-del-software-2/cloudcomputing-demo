@@ -67,4 +67,27 @@ export class ShipmentController {
       documents,
     };
   }
+
+  @Post('/shipments/:shipment_id/retry-documents')
+  async retryShipmentDocuments(
+    @Param('shipment_id') shipmentId: string,
+    @Headers('x-request-id') requestId: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.shipments.retryShipmentDocuments({
+      shipmentId,
+      requestId: requestId ?? `retry_${shipmentId}`,
+    });
+
+    if (!result) {
+      throw new NotFoundException({
+        status: 404,
+        code: 'SHIPMENT_NOT_FOUND',
+        message: 'shipment not found',
+      });
+    }
+
+    response.status(result.duplicate ? HttpStatus.OK : HttpStatus.ACCEPTED);
+    return result;
+  }
 }

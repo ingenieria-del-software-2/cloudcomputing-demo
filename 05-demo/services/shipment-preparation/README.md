@@ -20,6 +20,7 @@ make verify-shipment-preparation
 POST /internal/events
 GET  /shipments/:shipment_id
 GET  /shipments/:shipment_id/documents
+POST /shipments/:shipment_id/retry-documents
 GET  /health
 GET  /healthz
 GET  /readyz
