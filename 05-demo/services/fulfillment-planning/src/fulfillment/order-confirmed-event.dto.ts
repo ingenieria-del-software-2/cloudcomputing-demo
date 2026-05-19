@@ -5,6 +5,7 @@ import {
   IsArray,
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
   Min,
   ValidateNested,
@@ -36,6 +37,10 @@ export class OrderConfirmedPayloadDto {
   @IsString()
   @IsNotEmpty()
   payment_id!: string;
+
+  @IsString()
+  @IsOptional()
+  payment_approved_at?: string;
 
   @IsString()
   @IsNotEmpty()

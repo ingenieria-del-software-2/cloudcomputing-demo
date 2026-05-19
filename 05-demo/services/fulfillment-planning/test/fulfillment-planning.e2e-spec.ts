@@ -190,6 +190,7 @@ describe('fulfillment-planning ATDD', () => {
         const body = response.body as { reserved_quantity: number };
         expect(body.reserved_quantity).toBeGreaterThanOrEqual(2);
       });
+    await expect(dbFulfillmentTransitionCount(orderId)).resolves.toBe(1);
 
     const event = await receiveEvent(
       'fulfillment.commitment_confirmed.v1',
@@ -209,10 +210,16 @@ describe('fulfillment-planning ATDD', () => {
       seller_id: 'seller_445566',
       fulfillment_model: 'standard',
     });
+    await expect(
+      dbOutboxPublishedEventCount(orderId, 'inventory.stock_reserved.v1'),
+    ).resolves.toBeGreaterThanOrEqual(1);
 
     const metrics = await http().get('/metrics').expect(200);
     expect(metrics.text).toContain(
       'fulfillment_commitments_total{service="fulfillment-planning",status="committed",version="v1"}',
+    );
+    expect(metrics.text).toContain(
+      'delivery_promise_created_within_15s_ratio{service="fulfillment-planning",version="v1"} 1',
     );
   });
 
@@ -281,6 +288,12 @@ describe('fulfillment-planning ATDD', () => {
         },
       ],
     });
+    await expect(
+      dbOutboxPublishedEventCount(
+        orderId,
+        'inventory.stock_reservation_failed.v1',
+      ),
+    ).resolves.toBeGreaterThanOrEqual(1);
   });
 
   it('publishes commitment_at_risk when Promesa Express fails', async () => {
@@ -353,6 +366,71 @@ describe('fulfillment-planning ATDD', () => {
     );
   });
 
+  it('persists the commitment and republishes the outbox when SQS is temporarily unavailable', async () => {
+    const orderId = `ord_fulfillment_outbox_${Date.now()}`;
+    const failingConfig = new ConfigService({
+      AWS_ACCESS_KEY_ID: 'test',
+      AWS_ENDPOINT_URL: 'http://127.0.0.1:1',
+      AWS_REGION: 'us-east-1',
+      AWS_SECRET_ACCESS_KEY: 'test',
+      DATABASE_URL: databaseUrl,
+      INPUT_SQS_QUEUE_URL: inputQueueUrl,
+      OUTBOX_PUBLISHER_ENABLED: 'false',
+      PROMESA_EXPRESS_ENABLED: 'false',
+      SERVICE_VERSION: 'v1',
+      SQS_QUEUE_URL: outputQueueUrl,
+      WORKER_ENABLED: 'false',
+    });
+    const failingService = new FulfillmentService(
+      failingConfig,
+      new MetricsService(failingConfig),
+      loggerMock(),
+    );
+    await failingService.onModuleInit();
+
+    const result = await failingService.handleOrderConfirmed({
+      event: orderConfirmedEvent(orderId, 'CARPINCHO-USB-C', 1),
+      requestId: `req_${orderId}`,
+    });
+    await failingService.onModuleDestroy();
+
+    expect(result).toMatchObject({
+      order_id: orderId,
+      status: 'FULFILLMENT_COMMITTED',
+      duplicate: false,
+    });
+    await expect(dbCommitmentStatus(orderId)).resolves.toBe(
+      'FULFILLMENT_COMMITTED',
+    );
+    await expect(dbOutboxPendingCount(orderId)).resolves.toBeGreaterThanOrEqual(
+      1,
+    );
+
+    const recoveryConfig = new ConfigService({
+      AWS_ACCESS_KEY_ID: 'test',
+      AWS_ENDPOINT_URL: 'http://localhost:4566',
+      AWS_REGION: 'us-east-1',
+      AWS_SECRET_ACCESS_KEY: 'test',
+      DATABASE_URL: databaseUrl,
+      INPUT_SQS_QUEUE_URL: inputQueueUrl,
+      OUTBOX_POLL_INTERVAL_MS: '100',
+      PROMESA_EXPRESS_ENABLED: 'false',
+      SERVICE_VERSION: 'v1',
+      SQS_QUEUE_URL: outputQueueUrl,
+      WORKER_ENABLED: 'false',
+    });
+    const recoveryService = new FulfillmentService(
+      recoveryConfig,
+      new MetricsService(recoveryConfig),
+      loggerMock(),
+    );
+    await recoveryService.onModuleInit();
+
+    await receiveEvent('fulfillment.commitment_confirmed.v1', orderId);
+    await recoveryService.onModuleDestroy();
+    await expect(dbOutboxPendingCount(orderId)).resolves.toBe(0);
+  });
+
   function postOrderConfirmed(
     orderId: string,
     sellerSku: string,
@@ -409,6 +487,45 @@ describe('fulfillment-planning ATDD', () => {
     const result = await db.query<{ count: string }>(
       'SELECT COUNT(*) AS count FROM inventory_reservations WHERE order_id = $1',
       [orderId],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async function dbFulfillmentTransitionCount(
+    orderId: string,
+  ): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      'SELECT COUNT(*) AS count FROM fulfillment_state_transitions WHERE order_id = $1',
+      [orderId],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async function dbOutboxPendingCount(orderId: string): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM event_outbox
+       WHERE payload->'payload'->>'order_id' = $1
+         AND status <> 'PUBLISHED'`,
+      [orderId],
+    );
+
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  async function dbOutboxPublishedEventCount(
+    orderId: string,
+    eventName: string,
+  ): Promise<number> {
+    const result = await db.query<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM event_outbox
+       WHERE payload->'payload'->>'order_id' = $1
+         AND event_name = $2
+         AND status = 'PUBLISHED'`,
+      [orderId, eventName],
     );
 
     return Number(result.rows[0]?.count ?? 0);
@@ -481,6 +598,7 @@ function orderConfirmedEvent(
       site_id: 'MLA',
       currency: 'ARS',
       gross_amount: 52999.99 * quantity,
+      payment_approved_at: occurredAt,
       items: [
         {
           item_id: `item_${sellerSku}`,

@@ -93,6 +93,22 @@ interface CommitmentCreateResult {
   commitment: FulfillmentCommitmentRecord;
   duplicate: boolean;
   promesaExpressFailed: boolean;
+  event?: EventEnvelope<Record<string, unknown>>;
+}
+
+interface OutboxEvent {
+  event: EventEnvelope<Record<string, unknown>>;
+  queueName: string;
+  queueUrl: string;
+}
+
+interface OutboxRow extends QueryResultRow {
+  outbox_id: string;
+  event_name: string;
+  queue_name: string;
+  queue_url: string;
+  payload: EventEnvelope<Record<string, unknown>>;
+  attempt_count: number;
 }
 
 interface CommitmentRow extends QueryResultRow {
@@ -133,6 +149,8 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
   private sqsClient?: SQSClient;
   private stopping = false;
   private workers: Promise<void>[] = [];
+  private outboxTimer?: NodeJS.Timeout;
+  private publishingOutbox = false;
 
   constructor(
     private readonly config: ConfigService,
@@ -142,11 +160,16 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit(): Promise<void> {
     await this.ensureSchema();
+    await this.resetInterruptedOutboxRows();
+    this.startOutboxPublisher();
     this.startWorkers();
   }
 
   async onModuleDestroy(): Promise<void> {
     this.stopping = true;
+    if (this.outboxTimer) {
+      clearInterval(this.outboxTimer);
+    }
     this.sqsClient?.destroy();
     await Promise.allSettled(this.workers);
     await this.pool?.end();
@@ -178,6 +201,11 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
         'processing_failed',
         version,
         durationSeconds(startedAt),
+      );
+      this.metrics.recordDeliveryPromiseSlo(
+        version,
+        deliveryPromiseDurationSeconds(command.event),
+        false,
       );
       this.logger.error('fulfillment_processing_failed', {
         request_id: command.requestId,
@@ -264,8 +292,21 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
           committedAt: undefined,
           createdAt: now,
         });
+        await this.insertFulfillmentTransition(client, {
+          commitment,
+          statusFrom: 'ORDER_CONFIRMED',
+          causationId: event.event_id,
+          changedAt: now,
+        });
+        const events = this.outboxEventsFor(commitment, event);
+        await this.insertOutboxEvents(client, events, now);
         await client.query('COMMIT');
-        return { commitment, duplicate: false, promesaExpressFailed: false };
+        return {
+          commitment,
+          duplicate: false,
+          promesaExpressFailed: false,
+          event: events[0]?.event,
+        };
       }
 
       const reservedItems = await this.reserveInventory(
@@ -287,12 +328,21 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
         committedAt: now,
         createdAt: now,
       });
+      await this.insertFulfillmentTransition(client, {
+        commitment,
+        statusFrom: 'ORDER_CONFIRMED',
+        causationId: event.event_id,
+        changedAt: now,
+      });
+      const events = this.outboxEventsFor(commitment, event);
+      await this.insertOutboxEvents(client, events, now);
       await client.query('COMMIT');
 
       return {
         commitment,
         duplicate: false,
         promesaExpressFailed: promiseMode.promesaExpressFailed,
+        event: events[0]?.event,
       };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -439,15 +489,111 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     return toCommitment(result.rows[0]);
   }
 
+  private async insertFulfillmentTransition(
+    client: PoolClient,
+    input: {
+      commitment: FulfillmentCommitmentRecord;
+      statusFrom: string;
+      causationId: string;
+      changedAt: string;
+    },
+  ): Promise<void> {
+    await client.query(
+      `INSERT INTO fulfillment_state_transitions (
+         transition_id, order_id, commitment_id, status_from, status_to,
+         causation_id, changed_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        newId('trn'),
+        input.commitment.order_id,
+        input.commitment.fulfillment_commitment_id,
+        input.statusFrom,
+        input.commitment.status,
+        input.causationId,
+        input.changedAt,
+      ],
+    );
+  }
+
+  private outboxEventsFor(
+    commitment: FulfillmentCommitmentRecord,
+    source: OrderConfirmedEventDto,
+  ): OutboxEvent[] {
+    const outcome = this.outcomeEvent(commitment, source);
+    const events: OutboxEvent[] = [
+      {
+        event: outcome,
+        queueName: this.outputQueueName(),
+        queueUrl: this.outputQueueUrl(),
+      },
+    ];
+    const trackingQueueUrl = this.trackingQueueUrl();
+
+    if (trackingQueueUrl) {
+      events.push({
+        event: outcome,
+        queueName: this.trackingQueueName(),
+        queueUrl: trackingQueueUrl,
+      });
+    }
+
+    for (const event of this.inventoryEvents(commitment, source)) {
+      events.push({
+        event,
+        queueName: this.inventoryQueueName(),
+        queueUrl: this.inventoryQueueUrl(),
+      });
+    }
+
+    return events;
+  }
+
+  private inventoryEvents(
+    commitment: FulfillmentCommitmentRecord,
+    source: OrderConfirmedEventDto,
+  ): Array<EventEnvelope<Record<string, unknown>>> {
+    if (commitment.failed_items.length > 0) {
+      return [this.inventoryStockReservationFailedEvent(commitment, source)];
+    }
+
+    if (commitment.reserved_items.length > 0) {
+      return [this.inventoryStockReservedEvent(commitment, source)];
+    }
+
+    return [];
+  }
+
+  private async insertOutboxEvents(
+    client: PoolClient,
+    events: OutboxEvent[],
+    createdAt: string,
+  ): Promise<void> {
+    for (const item of events) {
+      await client.query(
+        `INSERT INTO event_outbox (
+           outbox_id, event_id, event_name, queue_name, queue_url, payload,
+           status, attempt_count, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'PENDING', 0, $7, $7)`,
+        [
+          newId('out'),
+          item.event.event_id,
+          item.event.event_name,
+          item.queueName,
+          item.queueUrl,
+          JSON.stringify(item.event),
+          createdAt,
+        ],
+      );
+    }
+  }
+
   private async publishOutcome(
     command: HandleOrderConfirmedCommand,
     result: CommitmentCreateResult,
     version: string,
     startedAt: number,
   ): Promise<void> {
-    const event = this.outcomeEvent(result.commitment, command.event);
-    await this.publish(event, version);
-    await this.publishTrackingCopy(event, version);
+    await this.publishPendingOutbox(version);
 
     const metricStatus = metricStatusFor(result.commitment.status);
     this.metrics.recordFulfillment(metricStatus, version);
@@ -456,6 +602,12 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
       version,
       durationSeconds(startedAt),
     );
+    this.metrics.recordDeliveryPromiseSlo(
+      version,
+      deliveryPromiseDurationSeconds(command.event),
+      result.commitment.status !== 'FULFILLMENT_FAILED' &&
+        Boolean(result.commitment.estimated_delivery_date),
+    );
 
     if (result.promesaExpressFailed) {
       this.metrics.recordPromesaExpressFailure(version);
@@ -463,9 +615,10 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
 
     this.logger.info(logEventFor(result.commitment.status), {
       request_id: command.requestId,
-      event_id: event.event_id,
-      event_name: event.event_name,
-      correlation_id: event.correlation_id,
+      event_id: result.event?.event_id,
+      event_name: result.event?.event_name,
+      correlation_id:
+        result.event?.correlation_id ?? command.event.correlation_id,
       order_id: result.commitment.order_id,
       payment_id: command.event.payload.payment_id,
       fulfillment_commitment_id: result.commitment.fulfillment_commitment_id,
@@ -539,12 +692,15 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
       idempotency_key: `order_id:${commitment.order_id}`,
       payload: {
         order_id: commitment.order_id,
+        payment_id: source.payload.payment_id,
+        buyer_id: source.payload.buyer_id,
         fulfillment_commitment_id: commitment.fulfillment_commitment_id,
         seller_id: commitment.seller_id,
         fulfillment_model: commitment.fulfillment_model,
         origin_type: commitment.origin_type,
         estimated_delivery_date: commitment.estimated_delivery_date,
         reserved_items: commitment.reserved_items,
+        payment_approved_at: source.payload.payment_approved_at,
         committed_at: commitment.committed_at,
       },
     };
@@ -567,8 +723,11 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
       idempotency_key: `order_id:${commitment.order_id}`,
       payload: {
         order_id: commitment.order_id,
+        payment_id: source.payload.payment_id,
+        buyer_id: source.payload.buyer_id,
         reason: commitment.reason ?? 'FULFILLMENT_FAILED',
         failed_items: commitment.failed_items,
+        payment_approved_at: source.payload.payment_approved_at,
         failed_at: occurredAt,
       },
     };
@@ -591,6 +750,8 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
       idempotency_key: `order_id:${commitment.order_id}`,
       payload: {
         order_id: commitment.order_id,
+        payment_id: source.payload.payment_id,
+        buyer_id: source.payload.buyer_id,
         fulfillment_commitment_id: commitment.fulfillment_commitment_id,
         seller_id: commitment.seller_id,
         fulfillment_model: commitment.fulfillment_model,
@@ -598,7 +759,64 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
         estimated_delivery_date: commitment.estimated_delivery_date,
         reserved_items: commitment.reserved_items,
         reason: commitment.reason ?? 'FULFILLMENT_AT_RISK',
+        payment_approved_at: source.payload.payment_approved_at,
         at_risk_at: occurredAt,
+      },
+    };
+  }
+
+  private inventoryStockReservedEvent(
+    commitment: FulfillmentCommitmentRecord,
+    source: OrderConfirmedEventDto,
+  ): EventEnvelope<Record<string, unknown>> {
+    const occurredAt = new Date().toISOString();
+
+    return {
+      event_id: newId('evt'),
+      event_name: 'inventory.stock_reserved.v1',
+      event_version: '1.0',
+      occurred_at: occurredAt,
+      producer: 'fulfillment-planning',
+      correlation_id: source.correlation_id,
+      causation_id: source.event_id,
+      idempotency_key: `order_id:${commitment.order_id}:inventory`,
+      payload: {
+        order_id: commitment.order_id,
+        payment_id: source.payload.payment_id,
+        buyer_id: source.payload.buyer_id,
+        fulfillment_commitment_id: commitment.fulfillment_commitment_id,
+        seller_id: commitment.seller_id,
+        reserved_items: commitment.reserved_items,
+        payment_approved_at: source.payload.payment_approved_at,
+        reserved_at: occurredAt,
+      },
+    };
+  }
+
+  private inventoryStockReservationFailedEvent(
+    commitment: FulfillmentCommitmentRecord,
+    source: OrderConfirmedEventDto,
+  ): EventEnvelope<Record<string, unknown>> {
+    const occurredAt = new Date().toISOString();
+
+    return {
+      event_id: newId('evt'),
+      event_name: 'inventory.stock_reservation_failed.v1',
+      event_version: '1.0',
+      occurred_at: occurredAt,
+      producer: 'fulfillment-planning',
+      correlation_id: source.correlation_id,
+      causation_id: source.event_id,
+      idempotency_key: `order_id:${commitment.order_id}:inventory`,
+      payload: {
+        order_id: commitment.order_id,
+        payment_id: source.payload.payment_id,
+        buyer_id: source.payload.buyer_id,
+        fulfillment_commitment_id: commitment.fulfillment_commitment_id,
+        seller_id: commitment.seller_id,
+        failed_items: commitment.failed_items,
+        payment_approved_at: source.payload.payment_approved_at,
+        reservation_failed_at: occurredAt,
       },
     };
   }
@@ -674,6 +892,135 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
         error_message: error instanceof Error ? error.message : 'unknown error',
       });
     }
+  }
+
+  private startOutboxPublisher(): void {
+    if (
+      this.config.get<string>('OUTBOX_PUBLISHER_ENABLED', 'true') === 'false'
+    ) {
+      return;
+    }
+
+    void this.publishPendingOutbox(
+      this.config.get<string>('SERVICE_VERSION', 'v1'),
+    );
+    this.outboxTimer = setInterval(() => {
+      void this.publishPendingOutbox(
+        this.config.get<string>('SERVICE_VERSION', 'v1'),
+      );
+    }, this.outboxPollIntervalMs());
+  }
+
+  private async publishPendingOutbox(version: string): Promise<void> {
+    if (this.publishingOutbox) {
+      return;
+    }
+
+    this.publishingOutbox = true;
+    try {
+      const rows = await this.claimOutboxRows();
+
+      for (const row of rows) {
+        await this.publishOutboxRow(row, version);
+      }
+    } catch (error) {
+      this.logger.error('fulfillment_outbox_publish_failed', {
+        business_error_code: 'FULFILLMENT_OUTBOX_FAILED',
+        result: 'FULFILLMENT_OUTBOX_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+    } finally {
+      await this.recordOutboxBacklogDepth(version);
+      this.publishingOutbox = false;
+    }
+  }
+
+  private async recordOutboxBacklogDepth(version: string): Promise<void> {
+    try {
+      const result = await this.db().query<{ count: string }>(
+        `SELECT COUNT(*) AS count
+         FROM event_outbox
+         WHERE status <> 'PUBLISHED'`,
+      );
+      this.metrics.recordEventBacklogDepth(
+        'event_outbox',
+        version,
+        Number(result.rows[0]?.count ?? 0),
+      );
+    } catch {
+      // Metrics must not affect fulfillment processing.
+    }
+  }
+
+  private async claimOutboxRows(): Promise<OutboxRow[]> {
+    const result = await this.db().query<OutboxRow>(
+      `UPDATE event_outbox
+       SET status = 'IN_PROGRESS',
+           attempt_count = attempt_count + 1,
+           updated_at = NOW()
+       WHERE outbox_id IN (
+         SELECT outbox_id
+         FROM event_outbox
+         WHERE status = 'PENDING'
+         ORDER BY created_at ASC
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING outbox_id, event_name, queue_name, queue_url, payload, attempt_count`,
+      [this.outboxBatchSize()],
+    );
+
+    return result.rows;
+  }
+
+  private async publishOutboxRow(
+    row: OutboxRow,
+    version: string,
+  ): Promise<void> {
+    try {
+      await this.client().send(
+        new SendMessageCommand({
+          QueueUrl: row.queue_url,
+          MessageBody: JSON.stringify(row.payload),
+        }),
+      );
+      await this.db().query(
+        `UPDATE event_outbox
+         SET status = 'PUBLISHED', published_at = NOW(), updated_at = NOW()
+         WHERE outbox_id = $1`,
+        [row.outbox_id],
+      );
+      this.metrics.recordSqsPublish('success', version, row.queue_name);
+    } catch (error) {
+      await this.db().query(
+        `UPDATE event_outbox
+         SET status = 'PENDING', last_error = $2, updated_at = NOW()
+         WHERE outbox_id = $1`,
+        [
+          row.outbox_id,
+          error instanceof Error ? error.message : 'unknown error',
+        ],
+      );
+      this.metrics.recordSqsPublish('failure', version, row.queue_name);
+      this.logger.error('fulfillment_outbox_event_publish_failed', {
+        event_id: row.payload.event_id,
+        event_name: row.event_name,
+        correlation_id: row.payload.correlation_id,
+        queue: row.queue_name,
+        detail: `attempt:${row.attempt_count}`,
+        business_error_code: 'FULFILLMENT_EVENT_QUEUE_FAILED',
+        result: 'FULFILLMENT_EVENT_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
+  }
+
+  private async resetInterruptedOutboxRows(): Promise<void> {
+    await this.db().query(
+      `UPDATE event_outbox
+       SET status = 'PENDING', updated_at = NOW()
+       WHERE status = 'IN_PROGRESS'`,
+    );
   }
 
   private startWorkers(): void {
@@ -833,6 +1180,37 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
         updated_at TIMESTAMPTZ NOT NULL
       )
     `);
+    await this.db().query(`
+      CREATE TABLE IF NOT EXISTS fulfillment_state_transitions (
+        transition_id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL,
+        commitment_id TEXT NOT NULL,
+        status_from TEXT NOT NULL,
+        status_to TEXT NOT NULL,
+        causation_id TEXT NOT NULL,
+        changed_at TIMESTAMPTZ NOT NULL
+      )
+    `);
+    await this.db().query(`
+      CREATE TABLE IF NOT EXISTS event_outbox (
+        outbox_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        event_name TEXT NOT NULL,
+        queue_name TEXT NOT NULL,
+        queue_url TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL,
+        published_at TIMESTAMPTZ
+      )
+    `);
+    await this.db().query(`
+      CREATE INDEX IF NOT EXISTS event_outbox_pending_idx
+        ON event_outbox (status, created_at)
+    `);
     await this.seedInventory();
   }
 
@@ -909,6 +1287,17 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     return this.trackingQueueUrl()?.split('/').pop() ?? 'buyer-tracking-events';
   }
 
+  private inventoryQueueUrl(): string {
+    return this.config.get<string>(
+      'INVENTORY_SQS_QUEUE_URL',
+      this.outputQueueUrl(),
+    );
+  }
+
+  private inventoryQueueName(): string {
+    return this.inventoryQueueUrl().split('/').pop() ?? this.outputQueueName();
+  }
+
   private endpoint(): string | undefined {
     const endpoint =
       this.config.get<string>('SQS_ENDPOINT') ??
@@ -922,6 +1311,7 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
       this.inputQueueUrl(),
       this.outputQueueUrl(),
       this.trackingQueueUrl(),
+      this.inventoryQueueUrl(),
     ].some((queueUrl) => queueUrl?.startsWith('http://localhost:4566'))
       ? 'http://localhost:4566'
       : undefined;
@@ -987,6 +1377,18 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     }
 
     return Math.random() < value;
+  }
+
+  private outboxBatchSize(): number {
+    const value = Number(this.config.get<string>('OUTBOX_BATCH_SIZE', '10'));
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 10;
+  }
+
+  private outboxPollIntervalMs(): number {
+    const value = Number(
+      this.config.get<string>('OUTBOX_POLL_INTERVAL_MS', '1000'),
+    );
+    return Number.isFinite(value) && value >= 100 ? Math.floor(value) : 1000;
   }
 }
 
@@ -1170,6 +1572,26 @@ function deliveryDate(daysFromNow: number): string {
   const date = new Date();
   date.setUTCDate(date.getUTCDate() + daysFromNow);
   return date.toISOString().slice(0, 10);
+}
+
+function deliveryPromiseDurationSeconds(event: OrderConfirmedEventDto): number {
+  const confirmedAt =
+    validIsoOrUndefined(event.payload.confirmed_at) ?? event.occurred_at;
+  const confirmedAtMs = Date.parse(confirmedAt);
+
+  if (!Number.isFinite(confirmedAtMs)) {
+    return 0;
+  }
+
+  return Math.max(0, (Date.now() - confirmedAtMs) / 1000);
+}
+
+function validIsoOrUndefined(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  return Number.isFinite(Date.parse(value)) ? value : undefined;
 }
 
 function durationMs(startedAt: number): number {

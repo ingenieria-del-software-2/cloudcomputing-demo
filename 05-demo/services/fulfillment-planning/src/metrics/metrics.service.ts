@@ -24,9 +24,14 @@ export class MetricsService {
   private readonly httpDuration: Histogram<string>;
   private readonly commitments: Counter<string>;
   private readonly commitmentDuration: Histogram<string>;
+  private readonly deliveryPromiseWithin15s: Gauge<string>;
   private readonly sqsPublish: Counter<string>;
+  private readonly eventBacklogDepth: Gauge<string>;
+  private readonly eventDlqDepth: Gauge<string>;
   private readonly promesaExpressFailures: Counter<string>;
   private readonly buildInfo: Gauge<string>;
+  private deliveryPromiseEligible = 0;
+  private deliveryPromiseGood = 0;
 
   constructor(private readonly config: ConfigService = new ConfigService()) {
     collectDefaultMetrics({
@@ -62,10 +67,28 @@ export class MetricsService {
       buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15],
       registers: [this.registry],
     });
+    this.deliveryPromiseWithin15s = new Gauge({
+      name: 'delivery_promise_created_within_15s_ratio',
+      help: 'Ratio of confirmed orders receiving a delivery promise within 15 seconds',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
     this.sqsPublish = new Counter({
       name: 'sqs_publish_total',
       help: 'Total SQS publish attempts',
       labelNames: ['service', 'queue', 'status', 'version'],
+      registers: [this.registry],
+    });
+    this.eventBacklogDepth = new Gauge({
+      name: 'event_backlog_depth',
+      help: 'Approximate number of events waiting in the service queue or outbox',
+      labelNames: ['service', 'queue', 'version'],
+      registers: [this.registry],
+    });
+    this.eventDlqDepth = new Gauge({
+      name: 'event_dlq_depth',
+      help: 'Approximate number of events waiting in the service dead-letter queue',
+      labelNames: ['service', 'queue', 'version'],
       registers: [this.registry],
     });
     this.promesaExpressFailures = new Counter({
@@ -119,6 +142,23 @@ export class MetricsService {
     this.promesaExpressFailures.inc({ service: this.serviceName, version });
   }
 
+  recordDeliveryPromiseSlo(
+    version: string,
+    durationSeconds: number,
+    promiseCreated: boolean,
+  ): void {
+    this.deliveryPromiseEligible += 1;
+
+    if (promiseCreated && durationSeconds < 15) {
+      this.deliveryPromiseGood += 1;
+    }
+
+    this.deliveryPromiseWithin15s.set(
+      { service: this.serviceName, version },
+      this.deliveryPromiseGood / this.deliveryPromiseEligible,
+    );
+  }
+
   recordSqsPublish(
     status: SqsStatus,
     version: string,
@@ -130,6 +170,20 @@ export class MetricsService {
       status,
       version,
     });
+  }
+
+  recordEventBacklogDepth(queue: string, version: string, depth: number): void {
+    this.eventBacklogDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
+  }
+
+  recordEventDlqDepth(queue: string, version: string, depth: number): void {
+    this.eventDlqDepth.set(
+      { service: this.serviceName, queue, version },
+      depth,
+    );
   }
 
   get contentType(): string {

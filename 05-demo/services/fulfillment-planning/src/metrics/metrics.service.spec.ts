@@ -53,6 +53,15 @@ describe('MetricsService', () => {
     );
   });
 
+  it('records the delivery promise SLO ratio', async () => {
+    service.recordDeliveryPromiseSlo('v1', 1, true);
+    service.recordDeliveryPromiseSlo('v1', 20, true);
+
+    await expect(service.render()).resolves.toContain(
+      'delivery_promise_created_within_15s_ratio{service="fulfillment-planning",version="v1"} 0.5',
+    );
+  });
+
   it('records HTTP request duration buckets', async () => {
     service.recordHttpRequest({
       route: '/internal/events',
