@@ -115,6 +115,8 @@ interface PlannedDocument {
   contentType: string;
 }
 
+type UploadResult = { ok: true } | { ok: false; reason: string };
+
 @Injectable()
 export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private pool?: Pool;
@@ -122,6 +124,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private s3Client?: S3Client;
   private stopping = false;
   private workers: Promise<void>[] = [];
+  private readonly transientFailuresByKey = new Map<string, number>();
 
   constructor(
     private readonly config: ConfigService,
@@ -229,6 +232,15 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  recordDocumentAccess(documents: DispatchDocumentRecord[]): void {
+    const version = this.config.get<string>('SERVICE_VERSION', 'v1');
+    this.metrics.recordDocumentAvailabilityOnAccess(
+      version,
+      documents.length > 0 &&
+        documents.every((document) => document.status === 'AVAILABLE'),
+    );
+  }
+
   private async createOrReplayShipment(
     event: FulfillmentCommitmentEventDto,
   ): Promise<ShipmentCreateResult> {
@@ -259,20 +271,22 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
       const plannedDocuments = this.dispatchDocuments(shipmentId, event);
       const uploadResults = await this.uploadDocuments(plannedDocuments);
       const uploadSucceeded = uploadResults.every((result) => result.ok);
-      const status: ShipmentStatus = uploadSucceeded
-        ? 'READY_TO_DISPATCH'
-        : 'DISPATCH_BLOCKED';
+      const sellerCutoff = this.sellerCutoffAt();
+      const cutoffExpired =
+        uploadSucceeded && isCutoffExpired(sellerCutoff, now);
+      const status: ShipmentStatus =
+        uploadSucceeded && !cutoffExpired
+          ? 'READY_TO_DISPATCH'
+          : 'DISPATCH_BLOCKED';
       const shipment = await this.insertShipment(client, {
         shipmentId,
         orderId: event.payload.order_id,
         fulfillmentCommitmentId: event.payload.fulfillment_commitment_id,
         sellerId: event.payload.seller_id,
         status,
-        sellerCutoffAt: sellerCutoffAt(),
-        readyToDispatchAt: uploadSucceeded ? now : undefined,
-        blockReason: uploadSucceeded
-          ? undefined
-          : firstUploadFailureReason(uploadResults),
+        sellerCutoffAt: sellerCutoff,
+        readyToDispatchAt: status === 'READY_TO_DISPATCH' ? now : undefined,
+        blockReason: blockReason(uploadSucceeded, cutoffExpired, uploadResults),
         createdAt: now,
       });
       const documents: DispatchDocumentRecord[] = [];
@@ -419,13 +433,16 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
     event: FulfillmentCommitmentEventDto,
   ): PlannedDocument[] {
     const generatedAt = new Date().toISOString();
+    const keyPrefix = this.s3BadKeyEnabled()
+      ? `bad-key/${shipmentId}`
+      : `shipments/${shipmentId}`;
 
     return [
       {
         documentId: newId('doc'),
         documentType: 'SHIPPING_LABEL',
         bucket: this.bucketName(),
-        key: `shipments/${shipmentId}/labels/shipping-label.pdf`,
+        key: `${keyPrefix}/labels/shipping-label.pdf`,
         contentType: 'application/json',
         body: JSON.stringify({
           type: 'SHIPPING_LABEL',
@@ -440,7 +457,7 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
         documentId: newId('doc'),
         documentType: 'DISPATCH_INSTRUCTIONS',
         bucket: this.bucketName(),
-        key: `shipments/${shipmentId}/instructions/dispatch-instructions.json`,
+        key: `${keyPrefix}/instructions/dispatch-instructions.json`,
         contentType: 'application/json',
         body: JSON.stringify({
           type: 'DISPATCH_INSTRUCTIONS',
@@ -457,8 +474,8 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
 
   private async uploadDocuments(
     documents: PlannedDocument[],
-  ): Promise<Array<{ ok: true } | { ok: false; reason: string }>> {
-    const results: Array<{ ok: true } | { ok: false; reason: string }> = [];
+  ): Promise<UploadResult[]> {
+    const results: UploadResult[] = [];
 
     for (const document of documents) {
       results.push(await this.uploadDocument(document));
@@ -469,23 +486,109 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
 
   private async uploadDocument(
     document: PlannedDocument,
-  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  ): Promise<UploadResult> {
     if (!this.s3PutObjectAllowed()) {
+      this.logger.error('s3_put_object_access_denied', {
+        s3_bucket: document.bucket,
+        s3_key: document.key,
+        error_type: 'AccessDenied',
+        business_error_code: 'DOCUMENT_UPLOAD_ACCESS_DENIED',
+        result: 'AccessDenied',
+        error_message: 'AccessDenied: s3:PutObject is not allowed',
+      });
       return { ok: false, reason: 'DOCUMENT_UPLOAD_ACCESS_DENIED' };
     }
 
-    try {
-      await this.s3().send(
-        new PutObjectCommand({
-          Bucket: document.bucket,
-          Key: document.key,
-          Body: document.body,
-          ContentType: document.contentType,
-        }),
+    if (!isValidDocumentKey(document.key)) {
+      this.logger.error('s3_document_key_invalid', {
+        s3_bucket: document.bucket,
+        s3_key: document.key,
+        business_error_code: 'DOCUMENT_KEY_INVALID',
+        result: 'DOCUMENT_KEY_INVALID',
+        error_message:
+          'Generated S3 key does not match shipment document prefix',
+      });
+      return { ok: false, reason: 'DOCUMENT_KEY_INVALID' };
+    }
+
+    const maxAttempts = this.s3UploadMaxAttempts();
+    let lastReason = 'DOCUMENT_UPLOAD_FAILED';
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await this.putObject(document);
+        return { ok: true };
+      } catch (error) {
+        lastReason = s3FailureCode(error);
+        this.logS3UploadFailure(
+          document,
+          error,
+          attempt,
+          maxAttempts,
+          lastReason,
+        );
+
+        if (
+          attempt < maxAttempts &&
+          lastReason !== 'DOCUMENT_UPLOAD_ACCESS_DENIED'
+        ) {
+          await sleep(this.s3UploadRetryDelayMs());
+        }
+
+        if (lastReason === 'DOCUMENT_UPLOAD_ACCESS_DENIED') {
+          break;
+        }
+      }
+    }
+
+    return { ok: false, reason: lastReason };
+  }
+
+  private async putObject(document: PlannedDocument): Promise<void> {
+    const remainingTransientFailures = this.transientFailuresRemaining(
+      document.key,
+    );
+
+    if (remainingTransientFailures > 0) {
+      this.transientFailuresByKey.set(
+        document.key,
+        remainingTransientFailures - 1,
       );
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, reason: s3FailureCode(error) };
+      throw transientS3Failure();
+    }
+
+    await this.s3().send(
+      new PutObjectCommand({
+        Bucket: document.bucket,
+        Key: document.key,
+        Body: document.body,
+        ContentType: document.contentType,
+      }),
+    );
+  }
+
+  private logS3UploadFailure(
+    document: PlannedDocument,
+    error: unknown,
+    attempt: number,
+    maxAttempts: number,
+    reason: string,
+  ): void {
+    const fields = {
+      s3_bucket: document.bucket,
+      s3_key: document.key,
+      attempt,
+      max_attempts: maxAttempts,
+      error_type: errorName(error),
+      business_error_code: reason,
+      result: reason,
+      error_message: error instanceof Error ? error.message : 'unknown error',
+    };
+
+    if (attempt < maxAttempts && reason !== 'DOCUMENT_UPLOAD_ACCESS_DENIED') {
+      this.logger.info('s3_put_object_retrying', fields);
+    } else {
+      this.logger.error('s3_put_object_failed', fields);
     }
   }
 
@@ -506,6 +609,10 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
 
     const metricStatus = metricStatusFor(result.shipment.status);
     this.metrics.recordShipment(metricStatus, version);
+    this.metrics.recordReadyBeforeCutoff(
+      version,
+      readyBeforeCutoff(result.shipment),
+    );
     this.metrics.observeShipmentDuration(
       metricStatus,
       version,
@@ -933,6 +1040,52 @@ export class ShipmentService implements OnModuleInit, OnModuleDestroy {
   private s3PutObjectAllowed(): boolean {
     return this.config.get<string>('S3_PUT_OBJECT_ALLOWED', 'true') !== 'false';
   }
+
+  private s3BadKeyEnabled(): boolean {
+    return this.config.get<string>('S3_BAD_KEY_ENABLED', 'false') === 'true';
+  }
+
+  private s3UploadMaxAttempts(): number {
+    const value = Number(
+      this.config.get<string>('S3_UPLOAD_MAX_ATTEMPTS', '2'),
+    );
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 2;
+  }
+
+  private s3UploadRetryDelayMs(): number {
+    const value = Number(
+      this.config.get<string>('S3_UPLOAD_RETRY_DELAY_MS', '25'),
+    );
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 25;
+  }
+
+  private transientFailuresRemaining(key: string): number {
+    if (!this.transientFailuresByKey.has(key)) {
+      const configured = Number(
+        this.config.get<string>('S3_TRANSIENT_FAILURES_BEFORE_SUCCESS', '0'),
+      );
+      this.transientFailuresByKey.set(
+        key,
+        Number.isFinite(configured) && configured > 0
+          ? Math.floor(configured)
+          : 0,
+      );
+    }
+
+    return this.transientFailuresByKey.get(key) ?? 0;
+  }
+
+  private sellerCutoffAt(): string {
+    const date = new Date();
+
+    if (this.config.get<string>('SELLER_CUTOFF_EXPIRED', 'false') === 'true') {
+      date.setUTCMinutes(date.getUTCMinutes() - 1);
+    } else {
+      date.setUTCHours(date.getUTCHours() + 24);
+    }
+
+    return date.toISOString();
+  }
 }
 
 class ShipmentEventPublishError extends Error {
@@ -1041,12 +1194,60 @@ function s3FailureCode(error: unknown): string {
   return 'DOCUMENT_UPLOAD_FAILED';
 }
 
-function firstUploadFailureReason(
-  results: Array<{ ok: true } | { ok: false; reason: string }>,
-): string {
+function firstUploadFailureReason(results: UploadResult[]): string {
   return (
     results.find((result) => !result.ok)?.reason ?? 'DOCUMENT_UPLOAD_FAILED'
   );
+}
+
+function blockReason(
+  uploadSucceeded: boolean,
+  cutoffExpired: boolean,
+  uploadResults: UploadResult[],
+): string | undefined {
+  if (!uploadSucceeded) {
+    return firstUploadFailureReason(uploadResults);
+  }
+
+  return cutoffExpired ? 'SELLER_CUTOFF_EXPIRED' : undefined;
+}
+
+function readyBeforeCutoff(shipment: ShipmentRecord): boolean {
+  return (
+    shipment.status === 'READY_TO_DISPATCH' &&
+    !!shipment.ready_to_dispatch_at &&
+    !isCutoffExpired(shipment.seller_cutoff_at, shipment.ready_to_dispatch_at)
+  );
+}
+
+function isCutoffExpired(
+  sellerCutoffAt: string,
+  referenceTime: string,
+): boolean {
+  return new Date(referenceTime).getTime() > new Date(sellerCutoffAt).getTime();
+}
+
+function isValidDocumentKey(key: string): boolean {
+  return /^shipments\/shp_[^/]+\/(labels\/shipping-label\.pdf|instructions\/dispatch-instructions\.json)$/.test(
+    key,
+  );
+}
+
+function transientS3Failure(): Error {
+  const error = new Error('transient S3 PutObject failure');
+  error.name = 'InternalError';
+  return error;
+}
+
+function errorName(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    const name = (error as { name?: unknown }).name;
+    if (typeof name === 'string') {
+      return name;
+    }
+  }
+
+  return 'Error';
 }
 
 function isPgUniqueViolation(error: unknown): boolean {
@@ -1086,12 +1287,6 @@ function isFulfillmentCommitmentEvent(
     typeof (value as { payload?: { fulfillment_commitment_id?: unknown } })
       .payload?.fulfillment_commitment_id === 'string'
   );
-}
-
-function sellerCutoffAt(): string {
-  const date = new Date();
-  date.setUTCHours(date.getUTCHours() + 24);
-  return date.toISOString();
 }
 
 function durationMs(startedAt: number): number {

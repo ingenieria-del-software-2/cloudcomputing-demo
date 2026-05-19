@@ -24,6 +24,9 @@ export class MetricsService {
   private readonly shipments: Counter<string>;
   private readonly shipmentDuration: Histogram<string>;
   private readonly documentFailures: Counter<string>;
+  private readonly dispatchDocumentFailureCount: Counter<string>;
+  private readonly readyBeforeCutoff: Gauge<string>;
+  private readonly documentAvailabilityOnAccess: Gauge<string>;
   private readonly sqsPublish: Counter<string>;
   private readonly buildInfo: Gauge<string>;
 
@@ -64,6 +67,24 @@ export class MetricsService {
     this.documentFailures = new Counter({
       name: 'shipment_document_failures_total',
       help: 'Total shipment document generation or upload failures',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
+    this.dispatchDocumentFailureCount = new Counter({
+      name: 'dispatch_document_failure_count',
+      help: 'Total dispatch document failures for war room evidence',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
+    this.readyBeforeCutoff = new Gauge({
+      name: 'ready_to_dispatch_before_seller_cutoff_ratio',
+      help: 'Whether the latest eligible shipment was ready before seller cutoff',
+      labelNames: ['service', 'version'],
+      registers: [this.registry],
+    });
+    this.documentAvailabilityOnAccess = new Gauge({
+      name: 'dispatch_document_availability_on_first_access_ratio',
+      help: 'Whether dispatch documents were available when accessed',
       labelNames: ['service', 'version'],
       registers: [this.registry],
     });
@@ -116,6 +137,27 @@ export class MetricsService {
 
   recordDocumentFailure(version: string): void {
     this.documentFailures.inc({ service: this.serviceName, version });
+    this.dispatchDocumentFailureCount.inc({
+      service: this.serviceName,
+      version,
+    });
+  }
+
+  recordReadyBeforeCutoff(version: string, readyBeforeCutoff: boolean): void {
+    this.readyBeforeCutoff.set(
+      { service: this.serviceName, version },
+      readyBeforeCutoff ? 1 : 0,
+    );
+  }
+
+  recordDocumentAvailabilityOnAccess(
+    version: string,
+    availableOnAccess: boolean,
+  ): void {
+    this.documentAvailabilityOnAccess.set(
+      { service: this.serviceName, version },
+      availableOnAccess ? 1 : 0,
+    );
   }
 
   recordSqsPublish(

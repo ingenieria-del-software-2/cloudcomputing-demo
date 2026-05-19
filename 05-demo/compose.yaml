@@ -336,7 +336,12 @@ services:
       INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-commitment-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
       SHIPMENT_DOCUMENTS_BUCKET: seller-dispatch-documents-lab
+      S3_BAD_KEY_ENABLED: "false"
       S3_PUT_OBJECT_ALLOWED: "true"
+      S3_TRANSIENT_FAILURES_BEFORE_SUCCESS: "0"
+      S3_UPLOAD_MAX_ATTEMPTS: "2"
+      S3_UPLOAD_RETRY_DELAY_MS: "25"
+      SELLER_CUTOFF_EXPIRED: "false"
       WORKER_CONCURRENCY: "1"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:

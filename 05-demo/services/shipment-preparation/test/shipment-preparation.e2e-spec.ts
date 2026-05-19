@@ -87,7 +87,12 @@ describe('shipment-preparation ATDD', () => {
       DATABASE_URL: databaseUrl,
       GIT_COMMIT: 'e2e',
       INPUT_SQS_QUEUE_URL: inputQueueUrl,
+      S3_BAD_KEY_ENABLED: 'false',
       S3_PUT_OBJECT_ALLOWED: 'true',
+      S3_TRANSIENT_FAILURES_BEFORE_SUCCESS: '0',
+      S3_UPLOAD_MAX_ATTEMPTS: '2',
+      S3_UPLOAD_RETRY_DELAY_MS: '0',
+      SELLER_CUTOFF_EXPIRED: 'false',
       SERVICE_VERSION: 'v1',
       SHIPMENT_DOCUMENTS_BUCKET: bucketName,
       SQS_QUEUE_URL: outputQueueUrl,
@@ -120,7 +125,12 @@ describe('shipment-preparation ATDD', () => {
   }, 60000);
 
   afterEach(() => {
+    process.env.S3_BAD_KEY_ENABLED = 'false';
     process.env.S3_PUT_OBJECT_ALLOWED = 'true';
+    process.env.S3_TRANSIENT_FAILURES_BEFORE_SUCCESS = '0';
+    process.env.S3_UPLOAD_MAX_ATTEMPTS = '2';
+    process.env.S3_UPLOAD_RETRY_DELAY_MS = '0';
+    process.env.SELLER_CUTOFF_EXPIRED = 'false';
     bufferedEvents.length = 0;
   });
 
@@ -260,6 +270,43 @@ describe('shipment-preparation ATDD', () => {
     expect(metrics.text).toContain(
       'shipments_total{service="shipment-preparation",status="ready_to_dispatch",version="v1"}',
     );
+    expect(metrics.text).toContain(
+      'ready_to_dispatch_before_seller_cutoff_ratio{service="shipment-preparation",version="v1"} 1',
+    );
+    expect(metrics.text).toContain(
+      'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 1',
+    );
+  });
+
+  it('retries transient S3 upload failures before marking a shipment ready', async () => {
+    const orderId = `ord_ship_retry_${Date.now()}`;
+    process.env.S3_TRANSIENT_FAILURES_BEFORE_SUCCESS = '1';
+    process.env.S3_UPLOAD_MAX_ATTEMPTS = '2';
+
+    const created = await postCommitment(orderId).expect(202);
+    const shipment = created.body as ShipmentResponse;
+
+    expect(shipment).toMatchObject({
+      order_id: orderId,
+      status: 'READY_TO_DISPATCH',
+      duplicate: false,
+    });
+    const documents = await http()
+      .get(`/shipments/${shipment.shipment_id}/documents`)
+      .expect(200);
+    const shipmentDocuments = (
+      documents.body as { documents: ShipmentDocumentResponse[] }
+    ).documents;
+
+    await expect(
+      headObject(requireDocument(shipmentDocuments, 'SHIPPING_LABEL').s3_key),
+    ).resolves.toBe(true);
+    await expect(
+      headObject(
+        requireDocument(shipmentDocuments, 'DISPATCH_INSTRUCTIONS').s3_key,
+      ),
+    ).resolves.toBe(true);
+    await receiveEvent('shipping.shipment_ready_to_dispatch.v1', orderId);
   });
 
   it('ignores duplicate fulfillment commitment events without duplicating shipment documents', async () => {
@@ -342,6 +389,95 @@ describe('shipment-preparation ATDD', () => {
     const metrics = await http().get('/metrics').expect(200);
     expect(metrics.text).toContain(
       'shipment_document_failures_total{service="shipment-preparation",version="v1"} 1',
+    );
+    expect(metrics.text).toContain(
+      'dispatch_document_failure_count{service="shipment-preparation",version="v1"} 1',
+    );
+    expect(metrics.text).toContain(
+      'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 0',
+    );
+  });
+
+  it('blocks dispatch when generated S3 document keys are invalid', async () => {
+    const orderId = `ord_ship_bad_key_${Date.now()}`;
+    process.env.S3_BAD_KEY_ENABLED = 'true';
+
+    const created = await postCommitment(orderId).expect(202);
+    const shipment = created.body as ShipmentResponse;
+
+    expect(shipment).toMatchObject({
+      order_id: orderId,
+      status: 'DISPATCH_BLOCKED',
+      duplicate: false,
+      reason: 'DOCUMENT_KEY_INVALID',
+    });
+
+    const documents = await http()
+      .get(`/shipments/${shipment.shipment_id}/documents`)
+      .expect(200);
+    const shipmentDocuments = (
+      documents.body as { documents: ShipmentDocumentResponse[] }
+    ).documents;
+    expect(shipmentDocuments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          s3_key: `bad-key/${shipment.shipment_id}/labels/shipping-label.pdf`,
+          status: 'UPLOAD_FAILED',
+        }),
+        expect.objectContaining({
+          s3_key: `bad-key/${shipment.shipment_id}/instructions/dispatch-instructions.json`,
+          status: 'UPLOAD_FAILED',
+        }),
+      ]),
+    );
+    await expect(
+      headObject(`shipments/${shipment.shipment_id}/labels/shipping-label.pdf`),
+    ).resolves.toBe(false);
+
+    const event = await receiveEvent('shipping.dispatch_blocked.v1', orderId);
+    expect(event.payload).toMatchObject({
+      order_id: orderId,
+      shipment_id: shipment.shipment_id,
+      reason: 'DOCUMENT_KEY_INVALID',
+    });
+  });
+
+  it('marks shipment as blocked when seller cutoff is already expired', async () => {
+    const orderId = `ord_ship_cutoff_${Date.now()}`;
+    process.env.SELLER_CUTOFF_EXPIRED = 'true';
+
+    const created = await postCommitment(orderId).expect(202);
+    const shipment = created.body as ShipmentResponse;
+
+    expect(shipment).toMatchObject({
+      order_id: orderId,
+      status: 'DISPATCH_BLOCKED',
+      duplicate: false,
+      reason: 'SELLER_CUTOFF_EXPIRED',
+    });
+
+    const documents = await http()
+      .get(`/shipments/${shipment.shipment_id}/documents`)
+      .expect(200);
+    const shipmentDocuments = (
+      documents.body as { documents: ShipmentDocumentResponse[] }
+    ).documents;
+    expect(shipmentDocuments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'AVAILABLE' }),
+        expect.objectContaining({ status: 'AVAILABLE' }),
+      ]),
+    );
+
+    const event = await receiveEvent('shipping.dispatch_blocked.v1', orderId);
+    expect(event.payload).toMatchObject({
+      order_id: orderId,
+      shipment_id: shipment.shipment_id,
+      reason: 'SELLER_CUTOFF_EXPIRED',
+    });
+    const metrics = await http().get('/metrics').expect(200);
+    expect(metrics.text).toContain(
+      'ready_to_dispatch_before_seller_cutoff_ratio{service="shipment-preparation",version="v1"} 0',
     );
   });
 

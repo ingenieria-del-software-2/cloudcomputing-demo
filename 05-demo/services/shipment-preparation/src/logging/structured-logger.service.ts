@@ -15,6 +15,10 @@ export interface LogFields {
   fulfillment_commitment_id?: string;
   shipment_id?: string;
   queue?: string;
+  s3_bucket?: string;
+  s3_key?: string;
+  attempt?: number;
+  max_attempts?: number;
   producer_version?: string;
   idempotency_key?: string;
   duration_ms?: number;

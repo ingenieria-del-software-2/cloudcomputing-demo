@@ -34,8 +34,27 @@ describe('MetricsService', () => {
   it('records document failures', async () => {
     service.recordDocumentFailure('v1');
 
-    await expect(service.render()).resolves.toContain(
+    const metrics = await service.render();
+
+    expect(metrics).toContain(
       'shipment_document_failures_total{service="shipment-preparation",version="v1"} 1',
+    );
+    expect(metrics).toContain(
+      'dispatch_document_failure_count{service="shipment-preparation",version="v1"} 1',
+    );
+  });
+
+  it('records shipment SLO gauges', async () => {
+    service.recordReadyBeforeCutoff('v1', true);
+    service.recordDocumentAvailabilityOnAccess('v1', false);
+
+    const metrics = await service.render();
+
+    expect(metrics).toContain(
+      'ready_to_dispatch_before_seller_cutoff_ratio{service="shipment-preparation",version="v1"} 1',
+    );
+    expect(metrics).toContain(
+      'dispatch_document_availability_on_first_access_ratio{service="shipment-preparation",version="v1"} 0',
     );
   });
 

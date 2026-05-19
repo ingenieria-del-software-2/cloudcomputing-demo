@@ -26,3 +26,12 @@ GET  /readyz
 GET  /version
 GET  /metrics
 ```
+
+## Controlled Failure Modes
+
+```text
+S3_PUT_OBJECT_ALLOWED=false              Simulates AccessDenied for s3:PutObject
+S3_BAD_KEY_ENABLED=true                  Generates invalid S3 document keys
+S3_TRANSIENT_FAILURES_BEFORE_SUCCESS=1   Forces retryable S3 upload failures
+SELLER_CUTOFF_EXPIRED=true               Marks the shipment as blocked by cutoff
+```
