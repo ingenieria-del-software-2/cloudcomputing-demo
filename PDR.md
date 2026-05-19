@@ -1,39 +1,81 @@
-# PDR — Order-to-Ship Marketplace Lab
+# PDR v2 — Black Friday SRE GameDay: Order-to-Ship Marketplace Lab
 
-**Versión:** 1.0
-**Contexto:** clase de Cloud Computing aplicada
-**Caso de uso:** marketplace estilo MercadoLibre, sin afirmar que esta sea la arquitectura interna real de MercadoLibre
+**Versión:** 2.0
+**Contexto:** clase de Cloud Computing aplicada como war room SRE
+**Caso de uso:** marketplace ficticio `MercadoFuego`, inspirado en marketplaces tipo MercadoLibre, sin afirmar ni sugerir que esta sea su arquitectura interna real
+**Evento:** Black Friday / Hot Sale
+**Feature problemática:** `Promesa Express`
 **Restricción principal:** máximo **4 microservicios** desplegables por alumnos
-**Arquitectura:** saga coreografiada, event-driven, database-per-service, AWS-first lab
+**Arquitectura:** saga coreografiada, event-driven, database-per-service, AWS-first lab usado como escenario de incidente
 
 ---
 
 # 1. Resumen ejecutivo
 
-La clase deja de ser un recorrido top-down por servicios AWS y pasa a ser una experiencia de arquitectura aplicada:
+La clase deja de ser un recorrido top-down por servicios AWS y pasa a ser una experiencia de operación bajo presión.
 
-> Una compra pagada debe convertirse en una orden confirmada, con fulfillment comprometido, shipment listo para despacho y estado visible para el comprador.
+Durante un evento tipo Black Friday, un marketplace ficticio llamado **MercadoFuego** lanza una nueva feature de checkout llamada **Promesa Express** y, al mismo tiempo, distintos equipos de infraestructura aplican cambios no coordinados. El sistema no está completamente caído: está peor. Algunas compras avanzan, otras se demoran, algunas quedan inconsistentes y el tracking visible para el comprador no siempre refleja la verdad interna.
 
-El flujo elegido es **Order-to-Ship**, porque combina problemas reales de un marketplace:
+La clase entra como **equipo SRE de guardia**. Su misión no es dejar una arquitectura perfecta, sino recuperar un flujo crítico defendible:
 
 ```text
 pago aprobado
 → orden confirmada
-→ stock/fulfillment comprometido
+→ fulfillment comprometido
 → shipment preparado
 → tracking visible para comprador
 ```
 
-La arquitectura usa **4 microservicios máximo**:
+Durante la crisis, ese flujo se ve degradado:
 
-| # | Microservicio          | Tipo                      | Responsabilidad                                      |
-| - | ---------------------- | ------------------------- | ---------------------------------------------------- |
-| 1 | `order-management`     | Participante core de saga | Confirmar y administrar la orden comercial           |
-| 2 | `fulfillment-planning` | Participante core de saga | Reservar/allocar stock y comprometer fulfillment     |
-| 3 | `shipment-preparation` | Participante core de saga | Crear shipment, documentos, etiqueta e instrucciones |
-| 4 | `buyer-order-tracking` | Proyección / read model   | Mantener el estado visible para el comprador         |
+```text
+pago aprobado
+→ orden confirmada tarde o duplicada
+→ fulfillment se atrasa o falla
+→ shipment queda bloqueado
+→ tracking visible miente o queda viejo
+```
+
+La pregunta central ya no es:
+
+```text
+¿Podemos construir este flujo?
+```
+
+La pregunta pasa a ser:
+
+```text
+¿Qué sacrificamos, revertimos o degradamos para que el usuario todavía pueda comprar?
+```
+
+El sistema se divide en **4 microservicios máximo**, desplegados por voluntarios con Terraform. El resto de la clase actúa como war room: define SLOs de emergencia, prioriza síntomas, decide mitigaciones, evalúa trade-offs y exige evidencia.
+
+La clase no busca memorizar servicios AWS. Busca practicar decisiones de arquitectura y operación:
+
+```text
+¿Qué flujo salva el negocio?
+¿Qué métrica representa dolor del usuario?
+¿Qué cambio revertimos primero?
+¿Qué feature degradamos?
+¿Cuándo escalar ayuda y cuándo amplifica el problema?
+¿Qué evidencia necesitamos para confiar en el sistema?
+¿Qué aprendimos para que el incidente no dependa de héroes?
+```
+
+Los microservicios se presentan como responsabilidades de negocio bajo presión, no como CRUDs:
+
+| # | Microservicio          | Rol en el incidente                                                        |
+| - | ---------------------- | -------------------------------------------------------------------------- |
+| 1 | `order-management`     | Protege que un pago aprobado no cree caos comercial                        |
+| 2 | `fulfillment-planning` | Decide si podemos cumplir lo vendido bajo presión                          |
+| 3 | `shipment-preparation` | Convierte promesa en algo despachable; su falla bloquea sellers            |
+| 4 | `buyer-order-tracking` | Representa la verdad percibida por el comprador; si miente, soporte arde   |
 
 El sistema se coordina por eventos, sin un orquestador central. Este patrón calza con una **saga coreografiada**, donde cada servicio ejecuta una transacción local, publica eventos y los siguientes servicios reaccionan a esos eventos. AWS define la saga coreografiada como un patrón para preservar consistencia en transacciones distribuidas mediante suscripciones a eventos, y advierte que funciona mejor cuando hay pocos participantes, justamente lo que buscamos en una clase con máximo 4 servicios. ([AWS Documentation][1])
+
+La frase operativa del PDR v2 es:
+
+> No buscamos producción perfecta. Buscamos producción defendible.
 
 ---
 
@@ -41,26 +83,53 @@ El sistema se coordina por eventos, sin un orquestador central. Este patrón cal
 
 ## Objetivo principal
 
-Que los alumnos entiendan Cloud Computing construyendo y operando un flujo de negocio realista, no memorizando servicios aislados.
+Que los alumnos entiendan Cloud Computing recuperando confiabilidad bajo presión, no memorizando servicios aislados ni admirando una arquitectura ideal.
+
+La arquitectura no es la solución en sí misma. Es el escenario donde se manifiestan malas decisiones, acoplamientos, deuda técnica, fallas parciales y trade-offs reales.
+
+> Esta arquitectura no está para ser admirada. Está para ser interrogada bajo presión.
 
 La clase debe responder preguntas como:
 
 ```text
-¿Por qué usamos una cola?
-¿Por qué cada servicio tiene su base?
+¿Qué significa estar mal si el sistema todavía responde?
+¿Qué flujo crítico salva el negocio?
+¿Qué SLO representa dolor real del comprador?
+¿Qué feature degradamos para proteger checkout?
+¿Qué cambio de infraestructura revertimos primero?
+¿Cuándo escalar workers arregla el problema y cuándo solo lo encarece?
 ¿Qué significa idempotencia?
-¿Qué pasa si un servicio se cae?
-¿Qué ve el comprador si internamente algo falla?
-¿Qué SLO se degrada?
-¿Cómo debuggeamos con logs, métricas y eventos?
-¿Qué recurso AWS soporta cada capacidad?
+¿Qué ve el comprador si internamente la saga avanzó pero el read model quedó viejo?
+¿Qué evidencia necesitamos para confiar en una mitigación?
+¿Cómo usamos Terraform para auditar, repetir, romper, revertir y limpiar?
 ```
 
 ---
 
 # 3. Problema que queremos modelar
 
-Durante una campaña de alto tráfico, por ejemplo Hot Sale, una orden aprobada no alcanza con “existir”. El negocio necesita que la orden avance rápido y de forma confiable hacia despacho.
+Durante Black Friday, una orden aprobada no alcanza con “existir”. El negocio necesita que la orden avance rápido, de forma confiable y con un estado visible honesto para el comprador.
+
+El problema no arranca con un sistema sano. Arranca con una producción heredada y degradada por cambios simultáneos:
+
+```text
+23:20 Infra ajusta workers, concurrencia y timeouts.
+23:35 Seguridad cambia permisos IAM.
+23:40 Observabilidad sube logging y métricas “para ver mejor”.
+23:50 Producto activa Promesa Express.
+00:00 Black Friday empieza.
+00:03 Soporte reporta reclamos.
+00:08 Fulfillment ve backlog.
+00:12 Tracking visible queda atrasado.
+```
+
+La nueva feature **Promesa Express** intenta mostrar una promesa comercial más atractiva:
+
+```text
+Comprá ahora y llega mañana.
+```
+
+La feature es valiosa para conversión, pero mete presión sobre stock, fulfillment, generación de shipment y tracking visible.
 
 ## Journey crítico
 
@@ -75,6 +144,18 @@ Durante una campaña de alto tráfico, por ejemplo Hot Sale, una orden aprobada 
 8. El comprador ve el estado actualizado.
 ```
 
+## Journey degradado durante Black Friday
+
+```text
+1. El comprador paga.
+2. El pago es aprobado.
+3. La orden se confirma tarde o se intenta duplicar.
+4. Fulfillment se atrasa por backlog o Promesa Express.
+5. Shipment queda bloqueado por permisos o documentos.
+6. El tracking visible queda viejo o muestra un estado engañoso.
+7. Soporte recibe reclamos aunque varios servicios sigan “up”.
+```
+
 ## Dolor de negocio si falla
 
 | Falla                                | Impacto                                      |
@@ -85,12 +166,37 @@ Durante una campaña de alto tráfico, por ejemplo Hot Sale, una orden aprobada 
 | Shipment sin etiqueta                | El vendedor no puede despachar               |
 | Tracking desactualizado              | El comprador no entiende qué pasa            |
 | Eventos duplicados mal manejados     | Órdenes duplicadas o estados corruptos       |
+| Promesa Express degradando checkout  | Se protege una feature y se sacrifica compra |
+| Backlog silencioso                   | El sistema está vivo pero incumple el SLO    |
+| Cambio IAM mal coordinado            | Sellers no pueden despachar                  |
 
 ---
 
 # 4. Principios de diseño
 
-## 4.1 Business-first, AWS-second
+## 4.1 Incidente-first / SRE-first
+
+La clase no abre con una arquitectura ideal. Abre con un incidente vivo.
+
+Antes:
+
+```text
+Deploy → happy path → incidentes
+```
+
+Ahora:
+
+```text
+Contexto de crisis → SLO de emergencia → deploy mínimo → síntomas → mitigación → evidencia → postmortem
+```
+
+El happy path no desaparece, pero cambia de rol. Ya no es el gran logro. Es apenas una prueba inicial:
+
+> Este caso funcionó. ¿Pero podemos confiar en esto durante Black Friday?
+
+---
+
+## 4.2 Business-first, AWS-second
 
 No se enseña:
 
@@ -105,22 +211,59 @@ Se enseña:
 ¿Qué necesitamos para lograrlo?”
 ```
 
-Los servicios AWS aparecen como consecuencia:
+Los servicios AWS aparecen como consecuencia de capacidades necesarias, no como catálogo:
 
-| Problema de negocio/técnico         | Servicio AWS               |
-| ----------------------------------- | -------------------------- |
-| Correr microservicios               | EC2                        |
-| Conectar servicios asincrónicamente | SQS                        |
-| Guardar estado transaccional        | RDS PostgreSQL             |
-| Guardar documentos/etiquetas        | S3                         |
-| Proyectar tracking buyer-facing     | DynamoDB                   |
-| Permisos por servicio               | IAM Roles                  |
-| Logs, métricas, SLOs                | CloudWatch                 |
-| Repetibilidad y cleanup             | Terraform / CloudFormation |
+| Necesidad                    | AWS aparece como           |
+| ---------------------------- | -------------------------- |
+| Correr servicios clásicos    | EC2                        |
+| Comunicación asíncrona       | SQS                        |
+| Estado transaccional         | RDS PostgreSQL             |
+| Documentos/etiquetas         | S3                         |
+| Tracking visible/read model  | DynamoDB                   |
+| Evidencia/logs/métricas      | CloudWatch                 |
+| Responsabilidad por servicio | IAM Roles                  |
+| Repetibilidad/rollback       | Terraform / CloudFormation |
 
 ---
 
-## 4.2 Máximo 4 microservicios
+## 4.3 SLO de journey como volante
+
+El primer problema del war room no es AWS. Es este:
+
+> No sabemos qué significa estar mal.
+
+La clase define un SLO de emergencia antes de optimizar recursos o tocar demasiadas perillas.
+
+SLO principal del taller:
+
+```text
+order_to_buyer_visible_tracking_under_2m_ratio
+```
+
+Definición:
+
+```text
+% de pagos aprobados que llegan a un estado visible de tracking
+en menos de 2 minutos,
+sin duplicar orden
+y sin vender stock inexistente.
+```
+
+Objetivo de emergencia:
+
+```text
+95% durante la ventana crítica del taller
+```
+
+AWS Well-Architected recomienda definir y monitorear SLOs usando percentiles en vez de promedios, porque los percentiles capturan mejor outliers y experiencia degradada. ([AWS Documentation][3])
+
+Regla didáctica:
+
+> Primero el usuario. Después el recurso.
+
+---
+
+## 4.4 Máximo 4 microservicios
 
 En una arquitectura real grande, probablemente separaríamos:
 
@@ -147,9 +290,17 @@ fulfillment-planning =
 
 Esto es un compromiso didáctico, no una afirmación de que toda empresa debería fusionarlo así.
 
+En v2, estos servicios se asignan a 3 roles de voluntarios:
+
+| Voluntario   | Rol narrativo                   | Microservicios / capacidades                    |
+| ------------ | ------------------------------- | ----------------------------------------------- |
+| Voluntario 1 | Checkout / Order Team           | `order-management` + entrada de pagos simulada  |
+| Voluntario 2 | Fulfillment / Shipping Team     | `fulfillment-planning` + `shipment-preparation` |
+| Voluntario 3 | SRE / Buyer Experience Team     | `buyer-order-tracking` + observabilidad         |
+
 ---
 
-## 4.3 Database-per-service
+## 4.5 Database-per-service
 
 Cada microservicio es dueño de su persistencia. Ningún otro servicio le escribe directamente la base.
 
@@ -166,7 +317,7 @@ Aplicado acá:
 
 ---
 
-## 4.4 Eventos de negocio, no eventos técnicos
+## 4.6 Eventos de negocio, no eventos técnicos
 
 No usamos nombres como:
 
@@ -186,9 +337,31 @@ shipping.shipment_ready_to_dispatch.v1
 customer_experience.order_tracking_updated.v1
 ```
 
+Cada evento debe permitir reconstruir una compra con `correlation_id`. Sin esa evidencia, la war room discute opiniones en vez de hechos.
+
 ---
 
-## 4.5 SLIs/SLOs de negocio
+## 4.7 Graceful degradation y rollback discipline
+
+Durante un incidente, la pregunta no es “qué arquitectura nos gusta más”, sino qué acción reduce dolor del usuario con menor riesgo.
+
+Decisiones esperadas:
+
+```text
+apagar Promesa Express
+degradarla a una promesa genérica
+mantenerla solo para ciertos sellers
+aislarla del camino crítico
+revertir un cambio de workers
+corregir o acotar un permiso IAM
+congelar cambios no críticos
+```
+
+La feature comercial no manda por encima del flujo crítico. Si `Promesa Express` degrada checkout, se apaga o se degrada.
+
+---
+
+## 4.8 SLIs/SLOs de negocio
 
 Los SLOs deben comunicar dolor real.
 
@@ -208,8 +381,6 @@ delivery_promise_created_within_15s_ratio
 ready_to_dispatch_before_seller_cutoff_ratio
 buyer_tracking_freshness_under_60s_ratio
 ```
-
-AWS Well-Architected recomienda definir y monitorear SLOs usando percentiles en vez de promedios, porque los percentiles capturan mejor outliers y experiencia degradada. ([AWS Documentation][3])
 
 ---
 
@@ -236,13 +407,21 @@ Microsoft, en su guía de microservicios con DDD, usa el ejemplo de un microserv
 
 ## In scope
 
-La clase/demo cubre:
+La clase/demo cubre el sistema técnico y la dinámica de operación:
 
 ```text
 order lifecycle
 event-driven architecture
 saga coreografiada
 database-per-service
+SLO de emergencia centrado en usuario
+war room SRE
+timeline de incidente
+graceful degradation
+rollback discipline
+feature flags conceptuales
+idempotencia bajo retries
+backpressure y backlog
 RDS PostgreSQL
 DynamoDB como read model
 S3 para documentos
@@ -251,6 +430,7 @@ IAM Roles por servicio
 EC2 como runtime de microservicios
 CloudWatch para logs/métricas/SLOs
 fallas controladas
+nota de guardia / postmortem de bolsillo
 cleanup de recursos
 ```
 
@@ -259,6 +439,8 @@ cleanup de recursos
 No se cubre en la versión base:
 
 ```text
+producción perfecta
+evaluación formal con rúbrica pesada
 Kubernetes
 ECS/EKS
 API Gateway
@@ -279,11 +461,24 @@ Cálculo logístico real
 
 Esos temas pueden quedar como extensiones.
 
+## Cómo usar este PDR
+
+El documento queda organizado en dos capas:
+
+| Capa | Uso en clase | Contenido |
+| ---- | ------------ | --------- |
+| Narrativa/pedagógica | Guía principal del GameDay | storytelling, roles, SLO, etapas, decisiones, incidentes, postmortem |
+| Técnica de soporte | Apéndice operativo | microservicios, eventos, schemas, AWS, Terraform, IAM, cleanup |
+
+La clase no recorre linealmente todo el apéndice técnico. Lo usa como respaldo cuando la war room necesita evidencia o contexto.
+
 ---
 
 # 7. Arquitectura lógica
 
 ## Vista de alto nivel
+
+La arquitectura se presenta como una producción heredada que hay que operar durante Black Friday. No es una solución perfecta; es el escenario donde la clase va a buscar síntomas, causas probables, mitigaciones y evidencia.
 
 ```text
 payments-core
@@ -325,9 +520,24 @@ buyer-order-tracking consume eventos de:
 - shipment-preparation
 ```
 
+Durante el incidente, la vista lineal ayuda a explicar el journey, pero la operación real exige mirar atrasos, duplicados, DLQs, freshness del read model y errores de permisos.
+
 ---
 
 # 8. Arquitectura AWS propuesta
+
+La arquitectura AWS no se introduce como catálogo de servicios. Se introduce desde capacidades necesarias para recuperar el flujo crítico:
+
+| Necesidad durante el incidente       | Servicio / práctica             |
+| ------------------------------------ | ------------------------------- |
+| Ejecutar los microservicios          | EC2                             |
+| Desacoplar servicios y absorber pico | SQS                             |
+| Persistir estado transaccional       | RDS PostgreSQL                  |
+| Guardar etiquetas/documentos         | S3                              |
+| Consultar estado visible rápido      | DynamoDB                        |
+| Ver evidencia y medir SLOs           | CloudWatch                      |
+| Acotar responsabilidades             | IAM Roles                       |
+| Repetir, revertir y limpiar cambios  | Terraform / CloudFormation      |
 
 ## Componentes AWS principales
 
@@ -362,6 +572,8 @@ AWS Region
 > Confirmar y administrar el ciclo comercial de una orden a partir de un pago aprobado.
 
 Este servicio es dueño de la verdad comercial inicial de la orden.
+
+En la historia Black Friday, protege que un pago aprobado no cree caos comercial: órdenes duplicadas, estados inconsistentes o reclamos por compras que “desaparecen”.
 
 ## 9.2 Consume
 
@@ -565,6 +777,8 @@ delivery promise
 
 Se agrupan para respetar la restricción de máximo 4 microservicios.
 
+En la historia Black Friday, es el punto donde `Promesa Express` puede mejorar conversión o degradar el flujo crítico. La clase debe decidir si la feature se apaga, se degrada o se aísla.
+
 ## 10.2 Consume
 
 ```text
@@ -588,7 +802,7 @@ inventory.stock_reservation_failed.v1
 2. Verifica disponibilidad por seller_sku.
 3. Reserva stock.
 4. Decide fulfillment model.
-5. Calcula promesa de entrega.
+5. Calcula promesa de entrega, con `Promesa Express` como feature degradable.
 6. Persiste commitment.
 7. Publica fulfillment.commitment_confirmed.v1.
 ```
@@ -763,6 +977,7 @@ Objetivo:
 | Servicio apagado        | Backlog en cola                     |
 | Regla de cutoff vencida | `fulfillment.commitment_at_risk.v1` |
 | DB caída                | No se publica commitment            |
+| Promesa Express lenta   | Aumenta latencia/backlog            |
 
 ---
 
@@ -773,6 +988,8 @@ Objetivo:
 > Convertir un fulfillment comprometido en un shipment listo para despacho.
 
 Este servicio representa shipping operations.
+
+En la historia Black Friday, convierte una promesa comercial en algo despachable. Si falla por permisos o documentos, los sellers quedan bloqueados aunque la orden y el fulfillment parezcan correctos.
 
 ## 11.2 Consume
 
@@ -933,6 +1150,8 @@ Objetivo:
 
 Este servicio no es el core transaccional de la saga. Es una proyección customer-facing.
 
+En la historia Black Friday, representa la verdad percibida por el comprador. Si queda vieja o muestra un estado engañoso, soporte arde aunque los servicios internos hayan avanzado.
+
 ## 12.2 Consume
 
 ```text
@@ -1088,6 +1307,8 @@ Objetivo:
 # 13. Contrato común de eventos
 
 Todos los eventos deben tener un envelope común.
+
+En v2, el contrato no es solo integración técnica. Es evidencia para la war room: cada compra debe poder reconstruirse con `correlation_id`, `causation_id`, timestamps y resultado de negocio.
 
 ```json
 {
@@ -1352,7 +1573,9 @@ maxReceiveCount = 3 o 5 para laboratorio
 
 # 16. Saga coreografiada
 
-## Happy path
+## Happy path sospechoso
+
+El happy path se ejecuta para demostrar que las piezas mínimas están vivas, no para declarar que el sistema está sano.
 
 ```text
 1. payments-core publica payments.payment_approved.v1
@@ -1364,6 +1587,10 @@ maxReceiveCount = 3 o 5 para laboratorio
 7. shipment-preparation publica shipping.shipment_ready_to_dispatch.v1
 8. buyer-order-tracking actualiza estado visible
 ```
+
+Pregunta para el aula:
+
+> ¿Un caso exitoso prueba confiabilidad durante Black Friday?
 
 ## Compensaciones
 
@@ -1396,23 +1623,59 @@ qué compensaciones debe escuchar
 
 # 17. SLOs/SLIs del sistema
 
-## Tabla principal
+Los SLOs dejan de ser una sección de referencia al final de la arquitectura y pasan a ser el volante de la clase.
 
-| Journey                                     | SLI                                                            | SLO            |
-| ------------------------------------------- | -------------------------------------------------------------- | -------------- |
-| Pago aprobado → orden confirmada            | `% de pagos aprobados que generan orden confirmada en < 5s`    | 99.5% / 7 días |
-| Orden confirmada → fulfillment comprometido | `% de órdenes confirmadas con fulfillment commitment en < 15s` | 99.0% / 7 días |
-| Orden confirmada → no cancelada por stock   | `% de órdenes sin cancelación por falta de stock`              | 99.95% / mes   |
-| Promesa logística estable                   | `% de órdenes cuya fecha prometida no empeora`                 | 97.0% / mes    |
-| Commitment → ready to dispatch              | `% de órdenes listas antes del cutoff`                         | 98.5% / día    |
-| Documento de despacho                       | `% de shipments con etiqueta disponible al primer acceso`      | 99.5% / semana |
-| Estado visible comprador                    | `% de cambios visibles en tracking en < 60s`                   | 99.0% / 7 días |
+La war room necesita acordar qué significa “estar bien” antes de perseguir CPU, logs ruidosos o métricas aisladas.
 
----
+## SLO principal de emergencia
+
+```text
+order_to_buyer_visible_tracking_under_2m_ratio
+```
+
+Definición:
+
+```text
+% de pagos aprobados que llegan a un estado visible de tracking
+en menos de 2 minutos,
+sin duplicar orden
+y sin vender stock inexistente.
+```
+
+Objetivo didáctico:
+
+```text
+95% durante la ventana crítica del taller
+```
+
+Este SLO no pretende ser el SLO real de una empresa. Es una herramienta pedagógica para obligar a pensar end-to-end.
+
+## SLIs secundarios de drill-down
+
+| SLI                                  | Qué enseña                               |
+| ------------------------------------ | ---------------------------------------- |
+| `order_confirmation_latency_p95`     | La entrada no alcanza si core tarda      |
+| `fulfillment_commitment_latency_p95` | Backlog y promesa logística              |
+| `ready_to_dispatch_ratio`            | El negocio no termina en “orden creada”  |
+| `buyer_tracking_freshness_p95`       | Experiencia visible                      |
+| `duplicate_payment_ignored_count`    | Idempotencia bajo retries                |
+| `dlq_message_count`                  | Fallas persistentes                      |
+| `dispatch_document_failure_count`    | Permisos/documentos/shipment             |
+
+## SLOs por servicio como material de soporte
+
+Los SLOs específicos de cada microservicio siguen documentados en sus secciones, pero no se usan como tablero principal del taller. Sirven para diagnosticar una vez que el SLO de journey indica dolor real.
+
+| Servicio               | SLO/SLI de soporte                            |
+| ---------------------- | --------------------------------------------- |
+| `order-management`     | `order_confirmation_within_5s_ratio`          |
+| `fulfillment-planning` | `delivery_promise_created_within_15s_ratio`   |
+| `shipment-preparation` | `ready_to_dispatch_before_seller_cutoff_ratio` |
+| `buyer-order-tracking` | `buyer_tracking_freshness_under_60s_ratio`    |
 
 ## Métricas técnicas como drill-down
 
-Las métricas técnicas existen, pero no son el tablero principal.
+No se ponen en el tablero principal. Se usan cuando el SLO de usuario dice que hay dolor.
 
 | Métrica técnica             | Para qué sirve                    |
 | --------------------------- | --------------------------------- |
@@ -1425,9 +1688,15 @@ Las métricas técnicas existen, pero no son el tablero principal.
 | DynamoDB read/write latency | Diagnóstico de tracking           |
 | IAM AccessDenied count      | Diagnóstico de permisos           |
 
+Regla de operación:
+
+> CPU alta no es automáticamente un incidente. Compradores con pagos aprobados sin tracking defendible sí lo son.
+
 ---
 
 # 18. Observabilidad
+
+La observabilidad se trata como evidencia para la war room. El objetivo no es generar más logs, sino reconstruir qué pasó, cuándo pasó, qué cambió, qué usuario fue afectado y si la mitigación funcionó.
 
 ## Logs obligatorios
 
@@ -1462,9 +1731,21 @@ duration_ms
 }
 ```
 
-## Dashboard sugerido
+## Dashboard sugerido para war room
 
 ```text
+Black Friday War Room
+- order_to_buyer_visible_tracking_under_2m_ratio
+- pagos aprobados sin tracking visible
+- p95 end-to-end payment approved → tracking visible
+- órdenes at-risk por fulfillment/shipment
+- buyer tracking freshness p95
+- backlog por cola
+- DLQ messages
+- AccessDenied / document failures
+
+Drill-down por servicio
+
 Order Management
 - pagos aprobados recibidos
 - órdenes confirmadas
@@ -1516,6 +1797,8 @@ Cada servicio tiene permisos mínimos sobre sus recursos.
 ```
 
 AWS recomienda usar IAM Roles para aplicaciones corriendo en EC2, porque permiten obtener credenciales temporales mediante instance profiles en vez de almacenar access keys dentro de la instancia. ([AWS Documentation][11])
+
+En v2, IAM también aparece como incidente narrativo: un endurecimiento de permisos antes de Black Friday puede bloquear `shipment-preparation` y dejar sellers sin etiqueta. La discusión no es solo “least privilege”, sino cómo mitigar con blast radius controlado y rollback claro.
 
 ## Roles
 
@@ -1616,22 +1899,51 @@ Trabajan consumiendo colas.
 
 # 21. Modos de despliegue para clase
 
-## Modo A — Una cuenta por grupo
+## Modo principal v2 — Una cuenta, 3 voluntarios
 
-Más simple.
+Es el modo recomendado para el GameDay. Reduce coordinación de cuentas y permite que el aula se enfoque en contratos, síntomas, SLOs y mitigaciones.
 
 ```text
-Grupo 1:
-- 4 EC2
-- 3 RDS pequeñas o 1 RDS con 3 DBs separadas para lab
+Voluntario 1: Checkout / Order Team
+- order-management
+- entrada de pagos simulada
+
+Voluntario 2: Fulfillment / Shipping Team
+- fulfillment-planning
+- shipment-preparation
+
+Voluntario 3: SRE / Buyer Experience Team
+- buyer-order-tracking
+- tablero de incidente
+- health checks
+- evidencia con correlation_id
+```
+
+Recursos por grupo:
+
+```text
+- 4 EC2 o menos si se agrupan servicios para el laboratorio
+- 3 RDS pequeñas o 1 RDS con 3 DBs/schemas separados para lab
 - 1 DynamoDB
 - 1 S3
 - 4 SQS + DLQs
+- CloudWatch Logs/Metrics
 ```
 
 Para una clase, se puede aceptar **una instancia RDS con varias bases/schema** por costo, aclarando que conceptualmente cada servicio es dueño de su DB.
 
-## Modo B — Una cuenta por alumno
+## Modo alternativo — 4 voluntarios
+
+Si aparece un cuarto voluntario, se puede separar `shipment-preparation` y dejar `buyer-order-tracking`/SRE como rol dedicado.
+
+| Voluntario | Servicio / rol                  |
+| ---------- | ------------------------------- |
+| 1          | `order-management`              |
+| 2          | `fulfillment-planning`          |
+| 3          | `shipment-preparation`          |
+| 4          | `buyer-order-tracking` / SRE    |
+
+## Extensión — Una cuenta por alumno
 
 Más realista, más complejo.
 
@@ -1649,7 +1961,7 @@ Requiere policies cross-account en SQS/S3 y coordinación de ARNs.
 Para primera iteración:
 
 ```text
-Modo A: una cuenta por grupo
+Modo principal v2: una cuenta por grupo con 3 voluntarios
 ```
 
 Luego, como extensión:
@@ -1665,44 +1977,81 @@ Modo B: cross-account
 ## Duración recomendada
 
 ```text
-3 a 4 horas
+3 horas
 ```
 
-## Bloque 1 — Contexto y journey
+## 0:00–0:15 — Apertura: Black Friday en llamas
 
 ```text
-20 min
+Contexto narrativo.
+Roles.
+Flujo crítico.
+Mapa mental del incidente.
 ```
 
-Contenido:
+Storytelling:
 
 ```text
-- qué es Order-to-Ship
-- por qué no alcanza con “pago aprobado”
-- actores: comprador, seller, logística, operaciones
-- SLOs del negocio
+Son las 23:55.
+MercadoFuego abre Black Friday en 5 minutos.
+Producto lanzó Promesa Express.
+Infra aplicó optimizaciones.
+Seguridad ajustó permisos.
+Observabilidad subió el nivel de logs.
+
+A las 00:03 hay reclamos, backlog, tracking atrasado y sellers sin etiquetas.
 ```
 
-## Bloque 2 — Arquitectura
+Pregunta al aula:
+
+> ¿Cuál es el flujo que no puede romperse aunque todo lo demás se degrade?
+
+Done de etapa:
 
 ```text
-30 min
+[ ] El negocio está entendido.
+[ ] El flujo crítico está identificado.
+[ ] Los equipos están asignados.
+[ ] La clase entiende que no vamos a optimizar todo.
 ```
 
-Contenido:
+## 0:15–0:30 — SLO de emergencia
 
 ```text
-- microservicios
-- eventos
-- saga coreografiada
-- database-per-service
-- AWS components
+Elegir SLI/SLO.
+Separar dolor de usuario de métricas técnicas.
+Declarar severidad.
 ```
 
-## Bloque 3 — Deploy
+Pregunta al aula:
+
+> ¿Qué métrica representa dolor del comprador?
+
+SLO inicial sugerido:
 
 ```text
-45-60 min
+El 95% de pagos aprobados debe llegar a tracking visible
+en menos de 2 minutos,
+sin duplicar órdenes
+y sin vender stock inexistente.
+```
+
+Checklist:
+
+```text
+[ ] Elegimos un flujo crítico.
+[ ] Elegimos 1 o 2 SLIs.
+[ ] Definimos umbral y ventana.
+[ ] Diferenciamos métrica de negocio vs métrica técnica.
+[ ] Declaramos severidad del incidente.
+```
+
+## 0:30–0:55 — Deploy mínimo por voluntarios
+
+```text
+Voluntario 1: order/checkout.
+Voluntario 2: fulfillment/shipping.
+Voluntario 3: tracking/SRE.
 ```
 
 Actividad:
@@ -1711,12 +2060,33 @@ Actividad:
 terraform init
 terraform apply
 verificación de health checks
+outputs mínimos compartidos
+correlation_id visible en logs
 ```
 
-## Bloque 4 — Happy path
+Pregunta al aula:
+
+> ¿Qué depende de quién?
+
+Done de etapa:
 
 ```text
-30 min
+[ ] order-management responde.
+[ ] fulfillment/shipment están activos.
+[ ] buyer-tracking responde.
+[ ] Se puede simular un pago aprobado.
+[ ] Hay logs con correlation_id.
+[ ] Hay cleanup preparado.
+```
+
+## 0:55–1:15 — Happy path sospechoso
+
+```text
+Simular pago aprobado.
+Ver orden.
+Ver fulfillment.
+Ver shipment.
+Ver tracking.
 ```
 
 Actividad:
@@ -1729,36 +2099,191 @@ ver shipment ready
 ver tracking actualizado
 ```
 
-## Bloque 5 — Incidentes
+Pregunta al aula:
+
+> ¿Esto prueba salud o solo ausencia momentánea de evidencia?
+
+Done de etapa:
 
 ```text
-45-60 min
+[ ] Hay una orden visible.
+[ ] Hay stock reservado.
+[ ] Hay shipment/documento.
+[ ] Hay tracking visible.
+[ ] Se puede reconstruir el recorrido con logs/eventos.
 ```
 
-Incidentes:
+## 1:15–1:40 — Incidente Promesa Express
 
 ```text
-duplicar payment_id
-stock insuficiente
-apagar fulfillment-planning
-quitar permiso S3
-generar tracking lag
+La feature nueva intenta prometer “llega mañana”.
+Durante Black Friday aumenta latencia y errores en fulfillment.
+Tracking queda congelado en ORDER_CONFIRMED.
 ```
 
-## Bloque 6 — Cierre
+Pregunta madre:
+
+> ¿Qué mata más negocio: apagar Promesa Express o degradar checkout?
+
+Mitigaciones posibles:
 
 ```text
-20 min
+apagar Promesa Express
+degradarla a promesa genérica
+mantenerla solo para ciertos sellers
+aislarla del camino crítico
+limitar retries o concurrencia
 ```
 
-Contenido:
+Concepto SRE:
 
 ```text
-- qué aprendimos de AWS
-- qué aprendimos de arquitectura
-- qué servicios fueron IaaS/PaaS/managed
-- limpieza de recursos
+Graceful degradation
 ```
+
+## 1:40–1:50 — Pausa corta
+
+Tres horas sin pausa degrada la clase igual que un sistema sin backpressure.
+
+## 1:50–2:15 — Incidente cambios de infra
+
+```text
+Timeline.
+Permisos/shipment/logging/workers.
+Elegir rollback o freeze.
+```
+
+Timeline base:
+
+```text
+23:20 Infra ajusta workers/concurrencia.
+23:35 Seguridad cambia permisos.
+23:40 Observabilidad sube logging.
+23:50 Producto activa Promesa Express.
+00:00 Black Friday empieza.
+00:03 reclamos.
+00:08 backlog.
+00:12 tracking atrasado.
+```
+
+Pregunta al aula:
+
+> ¿Rollback de qué, si cambiaron cinco cosas?
+
+Checklist:
+
+```text
+[ ] Construimos timeline del incidente.
+[ ] Separamos síntomas de cambios candidatos.
+[ ] Elegimos primer rollback o mitigación.
+[ ] Congelamos cambios no críticos.
+[ ] Definimos qué evidencia esperamos ver si funciona.
+```
+
+Concepto SRE:
+
+```text
+Change management + rollback discipline
+```
+
+## 2:15–2:40 — Backlog, shipment y tracking
+
+```text
+El sistema no cae; se atrasa.
+order-management sigue aceptando pagos.
+fulfillment acumula cola.
+shipment falla por permisos o documentos.
+tracking visible queda viejo.
+```
+
+Preguntas:
+
+```text
+¿Escalar arregla el incidente o solo lo hace más caro?
+¿Aceptaríamos un permiso más amplio por 30 minutos?
+¿El sistema está vivo si el comprador ve una mentira?
+```
+
+Decisiones posibles:
+
+```text
+escalar workers selectivamente
+limitar entrada
+priorizar eventos críticos
+corregir permiso mínimo
+aplicar permiso temporal con expiración
+mostrar estado visible menos engañoso
+```
+
+Conceptos SRE:
+
+```text
+Backpressure
+Queueing
+Retries
+Idempotencia
+Mitigación controlada
+Blast radius
+User-facing reliability
+```
+
+## 2:40–2:55 — Postmortem de bolsillo
+
+La pregunta incorrecta es:
+
+```text
+¿Quién rompió producción?
+```
+
+La pregunta correcta es:
+
+```text
+¿Qué condiciones hicieron razonable que esto pasara?
+```
+
+Formato de nota:
+
+```text
+Impacto:
+Síntoma principal:
+SLO degradado:
+Cambios contribuyentes:
+Mitigación aplicada:
+Riesgo aceptado:
+Acción preventiva:
+Qué no volveríamos a hacer:
+```
+
+Pregunta final:
+
+> ¿Qué guardrail habría prevenido esto sin pedirle a la gente que sea perfecta?
+
+## 2:55–3:00 — Cleanup y cierre conceptual
+
+```text
+terraform destroy
+verificación de recursos eliminados
+cierre conceptual
+```
+
+Frase posible:
+
+> Hoy usamos AWS. El problema real no era AWS. Era sostener una promesa de negocio cuando tráfico, cambios y deuda técnica llegan todos juntos a producción.
+
+## State of done por etapa
+
+| Etapa            | Done narrativo                | Evidencia mínima                  | Decisión del aula              |
+| ---------------- | ----------------------------- | --------------------------------- | ------------------------------ |
+| Briefing         | Flujo crítico identificado    | Mapa simple Order-to-Ship         | Qué salva el negocio           |
+| SLO emergencia   | SLO elegido                   | SLI + umbral + ventana            | Qué métrica manda              |
+| Deploy mínimo    | Partes activas                | Health checks / outputs Terraform | Qué contrato une equipos       |
+| Happy path       | Una compra fluye              | Tracking final + correlation_id   | Si confiamos o no              |
+| Feature falla    | Promesa Express degrada flujo | Latencia/backlog/error visible    | Apagar, degradar o aislar      |
+| Infra changes    | Timeline armado               | Lista de cambios                  | Qué revertir primero           |
+| Backlog          | Sistema atrasado, no caído    | Queue depth / tracking lag        | Escalar, limitar o priorizar   |
+| Shipment blocked | Documento/etiqueta falla      | Error de permiso o storage        | Fix mínimo vs permiso temporal |
+| Tracking stale   | Comprador ve estado viejo     | Freshness degradada               | Qué estado mostrar             |
+| Postmortem       | Aprendizaje registrado        | Nota de incidente                 | Guardrail futuro               |
 
 ---
 
@@ -1824,20 +2349,216 @@ Respuesta esperada:
 
 ---
 
-# 24. Incidentes controlados
+# 24. Incidentes narrativos Black Friday
 
-## Incidente 1 — Pago duplicado
+Los incidentes no se presentan como tests aislados. Cada falla viene de la historia: Black Friday empezó, se activó `Promesa Express` y hubo cambios simultáneos de infraestructura.
 
-### Acción
+## Incidente 1 — Promesa Express degrada fulfillment
+
+### Historia
+
+La nueva feature intenta calcular promesas más agresivas:
+
+```text
+“Llega mañana”
+“Despacho prioritario”
+“Stock listo para envío”
+```
+
+Durante el pico, esa lógica mete latencia y aumenta errores en `fulfillment-planning`.
+
+### Síntoma visible
+
+```text
+pagos aprobados tardan en llegar a tracking
+fulfillment se demora
+buyer tracking queda congelado en ORDER_CONFIRMED
+```
+
+### Acción controlada
+
+Activar el modo lento/error de `Promesa Express` o aumentar artificialmente su latencia.
+
+### Esperado
+
+```text
+fulfillment_commitment_latency_p95 empeora
+order_to_buyer_visible_tracking_under_2m_ratio se degrada
+SQS orders-confirmed-intake acumula mensajes
+la clase decide apagar, degradar o aislar Promesa Express
+```
+
+### Conceptos
+
+```text
+graceful degradation
+feature flag
+trade-off producto/confiabilidad
+SLO de journey
+```
+
+Pregunta madre:
+
+> ¿Qué mata más negocio: apagar Promesa Express o degradar checkout?
+
+---
+
+## Incidente 2 — Cambios de infra generan backlog
+
+### Historia
+
+No hubo un cambio malo. Hubo demasiados cambios no coordinados.
+
+```text
+23:20 Infra ajusta workers/concurrencia.
+23:35 Seguridad cambia permisos.
+23:40 Observabilidad sube logging.
+23:50 Producto activa Promesa Express.
+00:00 Black Friday empieza.
+```
+
+### Síntoma visible
+
+```text
+order-management sigue aceptando pagos
+fulfillment se atrasa
+shipment no llega a tiempo
+tracking queda viejo
+```
+
+### Acción controlada
+
+Reducir workers de `fulfillment-planning`, bajar timeouts o subir retries para que la cola crezca.
+
+### Esperado
+
+```text
+SQS queue depth aumenta
+DLQ puede crecer si los retries saturan
+el sistema sigue “up” pero incumple el SLO
+la clase decide escalar, limitar entrada o priorizar eventos críticos
+```
+
+### Conceptos
+
+```text
+backpressure
+queueing
+retries
+idempotencia
+rollback discipline
+```
+
+Pregunta:
+
+> ¿Escalar arregla el incidente o solo lo hace más caro?
+
+---
+
+## Incidente 3 — IAM bloquea shipment/documentos
+
+### Historia
+
+Seguridad endureció permisos antes del evento. La intención era buena; el resultado es que `shipment-preparation` no puede guardar etiquetas o instrucciones de despacho.
+
+### Acción controlada
+
+Remover `s3:PutObject` del rol de `shipment-preparation` o apuntar a un bucket/key no permitido.
+
+### Esperado
+
+```text
+shipping.dispatch_blocked.v1
+AccessDenied en logs
+no hay etiqueta disponible
+tracking refleja DISPATCH_BLOCKED o un estado equivalente
+dispatch_document_failure_count aumenta
+```
+
+### Decisión esperada
+
+```text
+rollback del permiso
+fix mínimo
+permiso amplio temporal con expiración
+despacho manual
+degradación del estado visible
+```
+
+### Conceptos
+
+```text
+IAM
+least privilege
+blast radius
+mitigación controlada
+rollback
+```
+
+Pregunta:
+
+> ¿Durante un incidente aceptarías un permiso más amplio por 30 minutos?
+
+---
+
+## Incidente 4 — El comprador ve una mentira vieja
+
+### Historia
+
+Internamente la saga avanzó, pero el comprador sigue viendo:
+
+```text
+“Compra confirmada”
+```
+
+Soporte recibe reclamos porque el sistema interno y la experiencia visible no coinciden.
+
+### Acción controlada
+
+Detener `buyer-order-tracking`, pausar su consumidor o aumentar artificialmente el lag del read model.
+
+### Esperado
+
+```text
+la saga core sigue avanzando
+buyer_tracking_freshness_p95 empeora
+tracking visible queda en estado viejo
+la clase reconstruye la orden con correlation_id
+```
+
+### Conceptos
+
+```text
+estado interno vs estado visible
+read model
+freshness
+user-facing reliability
+```
+
+Pregunta:
+
+> ¿Un sistema que procesa bien pero informa mal está sano?
+
+---
+
+## Incidente 5 — Bots/retries duplican pagos
+
+### Historia
+
+Durante el pico, bots, retries de cliente o entregas al menos una vez generan eventos repetidos para el mismo `payment_id`.
+
+### Acción controlada
 
 Enviar dos veces el mismo payload con `payment_id`.
 
 ### Esperado
 
 ```text
-Una sola orden.
-Duplicado ignorado.
-Log con DUPLICATE_PAYMENT_IGNORED.
+se crea una sola orden
+el duplicado se ignora
+log con DUPLICATE_PAYMENT_IGNORED
+duplicate_payment_ignored_count aumenta
+no se duplica stock ni shipment
 ```
 
 ### Conceptos
@@ -1849,141 +2570,96 @@ unique constraint
 evento duplicado ≠ compra duplicada
 ```
 
----
+## Mapeo desde incidentes técnicos originales
 
-## Incidente 2 — Stock insuficiente
-
-### Acción
-
-Configurar `available_quantity = 0`.
-
-### Esperado
-
-```text
-fulfillment.commitment_failed.v1
-tracking muestra FULFILLMENT_AT_RISK o CANCELLED
-SLO de stock se degrada
-```
-
-### Conceptos
-
-```text
-consistencia
-reserva transaccional
-compensación
-impacto en comprador
-```
+| Incidente técnico original | Nueva versión narrativa Black Friday                 | Cura SRE                                                    |
+| -------------------------- | ---------------------------------------------------- | ----------------------------------------------------------- |
+| Pago duplicado             | Bots/retries duplican eventos de pago durante pico   | Idempotencia, deduplicación, invariantes                    |
+| Stock insuficiente         | Promo agresiva vende más unidades de las disponibles | Reserva transaccional, compensación, estado visible honesto |
+| Apagar fulfillment         | Workers saturados o mal configurados generan backlog | Backpressure, escalado selectivo, degradación               |
+| Quitar permiso S3          | Cambio IAM bloquea etiquetas de despacho             | Rollback/fix de permisos, blast radius                      |
+| Tracking lag               | Read model atrasado mientras soporte recibe reclamos | Freshness SLI, correlation_id, priorización                 |
+| Logs ruidosos              | Observabilidad produce ruido y costo                 | Alertas por síntomas, reducción de ruido                    |
+| Evento duplicado           | SQS entrega al menos una vez / retries               | Consumidores idempotentes                                   |
+| DB lenta                   | Cambio de concurrencia satura RDS                    | Límites, tuning, no escalar ciegamente                      |
 
 ---
 
-## Incidente 3 — Apagar `fulfillment-planning`
+# 25. Entregable liviano de clase — Nota de guardia
 
-### Acción
+No hay evaluación formal pesada. El cierre operativo es una mini nota de guardia/postmortem que capture impacto, evidencia y decisión.
 
-Detener servicio.
-
-### Esperado
+Formato sugerido:
 
 ```text
-orders.order_confirmed.v1 se acumula en SQS
-order-management sigue funcionando
-no se genera fulfillment commitment
-tracking queda en ORDER_CONFIRMED
+Incidente:
+Black Friday / Order-to-Ship degradado
+
+Impacto:
+Compradores con pagos aprobados no veían tracking actualizado.
+Sellers no recibían shipment listo a tiempo.
+Fulfillment acumulaba backlog.
+
+SLO afectado:
+order_to_buyer_visible_tracking_under_2m_ratio
+
+Síntoma principal:
+Tracking lag + backlog en fulfillment/shipment.
+
+Cambios contribuyentes:
+Promesa Express activada.
+Workers modificados.
+Permisos de shipment ajustados.
+Logging elevado.
+
+Mitigación:
+Desactivar o degradar Promesa Express.
+Corregir permiso de documentos.
+Priorizar eventos críticos.
+Reducir ruido de logs.
+
+Riesgo aceptado:
+Promesa logística menos precisa durante la ventana crítica.
+
+Acción preventiva:
+Freeze de cambios antes de eventos.
+Feature flags obligatorios.
+SLO de journey antes de launch.
+Runbook de rollback.
 ```
 
-### Conceptos
+Evidencia mínima esperada:
 
 ```text
-backlog
-degradación parcial
-asincronía
-SLO de promise latency
-```
-
----
-
-## Incidente 4 — Quitar permiso S3
-
-### Acción
-
-Remover `s3:PutObject` del rol de `shipment-preparation`.
-
-### Esperado
-
-```text
-shipping.dispatch_blocked.v1
-no hay etiqueta disponible
-tracking refleja problema
-SLO de document availability se degrada
-```
-
-### Conceptos
-
-```text
-IAM
-least privilege
-AccessDenied
-debugging con logs
+1. Tracking final o estado visible at-risk.
+2. correlation_id usado para reconstruir una compra.
+3. Log o métrica que muestre degradación.
+4. Decisión explícita de mitigación.
+5. Riesgo aceptado.
+6. Acción preventiva.
+7. Cleanup ejecutado o instrucción clara de destrucción.
 ```
 
 ---
 
-## Incidente 5 — Tracking lag
+# 26. Criterios de éxito de la experiencia
 
-### Acción
-
-Detener `buyer-order-tracking`.
-
-### Esperado
+La clase fue exitosa si los alumnos pueden explicar:
 
 ```text
-La saga core sigue avanzando.
-El comprador no ve el estado actualizado.
-Se degrada buyer_tracking_freshness_under_60s_ratio.
+1. Por qué el flujo crítico no es “checkout” solamente.
+2. Por qué una orden pagada puede seguir siendo un incidente.
+3. Qué SLO representa dolor real del comprador.
+4. Por qué un sistema puede estar up y aun así estar mal.
+5. Qué feature conviene degradar primero.
+6. Qué cambio de infra conviene revertir primero.
+7. Por qué idempotencia importa durante retries.
+8. Por qué tracking viejo puede ser un problema de confiabilidad.
+9. Cómo Terraform ayuda a auditar cambios y no solo a crear recursos.
+10. Qué guardrail habría evitado repetir el incidente.
 ```
 
-### Conceptos
-
-```text
-estado interno vs estado visible
-read model
-freshness
-experiencia percibida
-```
-
----
-
-# 25. Entregables de los alumnos
-
-Cada grupo debe entregar:
-
-```text
-1. Diagrama de arquitectura final.
-2. URL de order-management.
-3. URL de buyer-order-tracking.
-4. Lista de colas SQS.
-5. Lista de eventos producidos/consumidos.
-6. Captura o evidencia del happy path.
-7. Evidencia de un incidente controlado.
-8. Logs con correlation_id.
-9. Explicación de un SLO degradado.
-10. Ejecución de cleanup.
-```
-
----
-
-# 26. Rúbrica de evaluación
-
-| Criterio                                | Peso |
-| --------------------------------------- | ---: |
-| Microservicios despliegan correctamente |  20% |
-| Happy path end-to-end funciona          |  20% |
-| Eventos tienen contrato claro           |  10% |
-| Idempotencia ante duplicados            |  10% |
-| Uso correcto de DB por servicio         |  10% |
-| IAM sin access keys hardcodeadas        |  10% |
-| Observabilidad con logs/correlation_id  |  10% |
-| Explicación de SLO/SLI de negocio       |  10% |
+No buscamos una producción perfecta. Buscamos que la clase pueda defender una decisión operativa con evidencia.
 
 ---
 
@@ -2035,9 +2711,29 @@ Dashboard de negocio primero.
 Consola AWS solo para debugging.
 ```
 
+## Riesgo 6 — La narrativa tapa la ejecución técnica
+
+Mitigación:
+
+```text
+Mantener comandos de demo mínimos.
+Tener Terraform y servicios fallback.
+Exigir evidencia concreta: health check, log, evento, métrica o tracking.
+```
+
+## Riesgo 7 — El SLO de journey es difícil de medir en vivo
+
+Mitigación:
+
+```text
+Usar correlation_id y timestamps en eventos.
+Aceptar medición didáctica con logs si no hay tablero completo.
+Separar SLO principal de métricas técnicas de drill-down.
+```
+
 ---
 
-# 28. Decisiones arquitectónicas
+# 28. Decisiones arquitectónicas y pedagógicas
 
 ## ADR-001 — Saga coreografiada
 
@@ -2159,6 +2855,91 @@ No se fuerza DynamoDB en dominios donde PostgreSQL es más natural.
 
 ---
 
+## ADR-007 — SRE-first GameDay
+
+**Decisión:** la clase se estructura como incidente SRE, no como despliegue lineal.
+
+**Motivo:**
+
+```text
+- alumnos avanzados
+- evita clase catálogo de AWS
+- obliga a decidir bajo presión
+- conecta arquitectura con operación
+```
+
+**Tradeoff:**
+
+```text
+- menos tiempo para explicar cada servicio
+- requiere buen storytelling y fallback docente
+```
+
+---
+
+## ADR-008 — SLO de journey como métrica principal
+
+**Decisión:** usar un SLO principal de Order-to-Ship visible para comprador.
+
+**Motivo:**
+
+```text
+- evita perseguir CPU/memoria como objetivo
+- centra la clase en dolor de usuario
+- obliga a razonar end-to-end
+```
+
+**Tradeoff:**
+
+```text
+- más difícil de medir que una métrica técnica simple
+- requiere correlation_id, eventos y logs consistentes
+```
+
+---
+
+## ADR-009 — Degradar features no críticas
+
+**Decisión:** `Promesa Express` puede apagarse o degradarse para proteger el flujo de compra.
+
+**Motivo:**
+
+```text
+- enseña graceful degradation
+- muestra que confiabilidad también es decisión de producto
+- protege el flujo crítico durante Black Friday
+```
+
+**Tradeoff:**
+
+```text
+- menor conversión o peor experiencia temporal
+- promesa logística menos precisa durante la ventana crítica
+```
+
+---
+
+## ADR-010 — Cambios congelados durante incidente
+
+**Decisión:** durante el incidente se congelan cambios no críticos.
+
+**Motivo:**
+
+```text
+- reduce incertidumbre
+- permite aislar variables
+- evita que la mitigación genere nuevos síntomas
+```
+
+**Tradeoff:**
+
+```text
+- puede bloquear mejoras legítimas
+- requiere disciplina organizacional
+```
+
+---
+
 # 29. Recursos AWS por grupo
 
 ## Mínimo recomendado
@@ -2225,22 +3006,23 @@ Checklist:
 
 # 31. Criterio de éxito de la demo
 
-La demo se considera exitosa si:
+La demo se considera exitosa si la war room puede afirmar:
 
 ```text
-1. Se simula un pago aprobado.
-2. Se crea una orden.
-3. Se publica orders.order_confirmed.v1.
-4. Se reserva stock.
-5. Se compromete fulfillment.
-6. Se crea shipment.
-7. Se genera documento en S3.
-8. Se actualiza tracking del comprador.
-9. Se puede consultar GET /orders/{order_id}/tracking.
-10. Se provoca al menos una falla y se diagnostica con logs/métricas.
+1. Identificamos el flujo crítico que salva el negocio.
+2. Definimos un SLO de emergencia centrado en usuario.
+3. Desplegamos o activamos las partes mínimas del sistema.
+4. Probamos el camino Order-to-Ship al menos una vez.
+5. Detectamos una degradación realista durante Black Friday.
+6. Aplicamos una mitigación defendible.
+7. Distinguimos causa probable, síntoma y acción de contención.
+8. Dejamos evidencia con correlation_id, logs, eventos o métricas.
+9. Tomamos una decisión explícita sobre qué sacrificar.
+10. Cerramos con una nota de incidente y una acción preventiva.
+11. Ejecutamos cleanup o dejamos claro cómo destruir recursos.
 ```
 
-Resultado esperado final:
+Resultado técnico mínimo esperado:
 
 ```text
 PAYMENT_APPROVED
@@ -2248,6 +3030,17 @@ PAYMENT_APPROVED
 → FULFILLMENT_COMMITTED
 → READY_TO_DISPATCH
 → BUYER_TRACKING_UPDATED
+```
+
+Resultado pedagógico esperado:
+
+```text
+flujo crítico operativo
+mitigación aplicada
+evidencia disponible
+riesgo declarado
+acción preventiva definida
+recursos limpiados
 ```
 
 ---
@@ -2272,7 +3065,7 @@ Al final, se vuelve a la teoría:
 
 La frase de cierre:
 
-> **No construimos una demo de AWS. Construimos un flujo de negocio de marketplace y usamos AWS para hacerlo ejecutable, observable, seguro y repetible.**
+> **Hoy usamos AWS. El problema real no era AWS. Era sostener una promesa de negocio cuando tráfico, cambios y deuda técnica llegan todos juntos a producción.**
 
 [1]: https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/saga-choreography.html?utm_source=chatgpt.com "Saga choreography pattern - AWS Prescriptive Guidance"
 [2]: https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-data-persistence/database-per-service.html?utm_source=chatgpt.com "Database-per-service pattern - AWS Prescriptive Guidance"
