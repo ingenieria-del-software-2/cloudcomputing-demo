@@ -88,11 +88,15 @@ export class SqsReadinessProbe implements ReadinessProbe {
 
   async isReady(): Promise<boolean> {
     try {
-      await this.client().send(
-        new GetQueueAttributesCommand({
-          QueueUrl: this.queueUrl(),
-          AttributeNames: ['QueueArn'],
-        }),
+      await Promise.all(
+        this.queueUrls().map((queueUrl) =>
+          this.client().send(
+            new GetQueueAttributesCommand({
+              QueueUrl: queueUrl,
+              AttributeNames: ['QueueArn'],
+            }),
+          ),
+        ),
       );
       return true;
     } catch {
@@ -119,6 +123,13 @@ export class SqsReadinessProbe implements ReadinessProbe {
     );
   }
 
+  private queueUrls(): string[] {
+    return [
+      this.queueUrl(),
+      this.config.get<string>('TRACKING_SQS_QUEUE_URL'),
+    ].filter((queueUrl): queueUrl is string => Boolean(queueUrl));
+  }
+
   private endpoint(): string | undefined {
     const endpoint =
       this.config.get<string>('SQS_ENDPOINT') ??
@@ -128,7 +139,9 @@ export class SqsReadinessProbe implements ReadinessProbe {
       return endpoint;
     }
 
-    return this.queueUrl().startsWith('http://localhost:4566')
+    return this.queueUrls().some((queueUrl) =>
+      queueUrl.startsWith('http://localhost:4566'),
+    )
       ? 'http://localhost:4566'
       : undefined;
   }

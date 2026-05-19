@@ -124,6 +124,26 @@ services:
         --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:buyer-tracking-events-dlq","maxReceiveCount":"3"}'
         >/dev/null
 
+  customer-experience-queue:
+    <<: *curl-one-shot
+    depends_on:
+      ministack-ready:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=customer-experience-events-dlq&Version=2012-11-05'
+        >/dev/null;
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=customer-experience-events&Version=2012-11-05'
+        --data 'Attribute.1.Name=RedrivePolicy'
+        --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:customer-experience-events-dlq","maxReceiveCount":"3"}'
+        >/dev/null
+
   shipment-documents-bucket:
     <<: *curl-one-shot
     depends_on:
@@ -261,6 +281,8 @@ services:
     depends_on:
       orders-confirmed-queue:
         condition: service_completed_successfully
+      buyer-tracking-queue:
+        condition: service_completed_successfully
       order-postgres:
         condition: service_healthy
     environment:
@@ -270,6 +292,7 @@ services:
       SERVICE_VERSION: v1
       DATABASE_URL: postgresql://order:order@order-postgres:5432/order_management
       SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
+      TRACKING_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
       IDEMPOTENCY_ENABLED: "true"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:
@@ -290,6 +313,8 @@ services:
         condition: service_completed_successfully
       fulfillment-commitment-queue:
         condition: service_completed_successfully
+      buyer-tracking-queue:
+        condition: service_completed_successfully
       fulfillment-postgres:
         condition: service_healthy
     environment:
@@ -300,9 +325,10 @@ services:
       DATABASE_URL: postgresql://fulfillment:fulfillment@fulfillment-postgres:5432/fulfillment_planning
       INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
       SQS_QUEUE_URL: http://ministack:4566/000000000000/fulfillment-commitment-intake
+      TRACKING_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
       PROMESA_EXPRESS_ENABLED: "true"
-      PROMESA_EXPRESS_LATENCY_MS: "750"
-      PROMESA_EXPRESS_ERROR_RATE: "0.25"
+      PROMESA_EXPRESS_LATENCY_MS: "${PROMESA_EXPRESS_LATENCY_MS:-750}"
+      PROMESA_EXPRESS_ERROR_RATE: "${PROMESA_EXPRESS_ERROR_RATE:-0.25}"
       WORKER_CONCURRENCY: "1"
       READY_CHECK_TIMEOUT_MS: "500"
     ports:
@@ -352,6 +378,37 @@ services:
         app_protocol: http
     healthcheck: *node-healthcheck
 
+  buyer-order-tracking:
+    image: buyer-order-tracking:local
+    build:
+      context: .
+      dockerfile: build/docker/buyer-order-tracking.Dockerfile
+    depends_on:
+      buyer-tracking-queue:
+        condition: service_completed_successfully
+      customer-experience-queue:
+        condition: service_completed_successfully
+    environment:
+      <<: [*aws-local, *service-meta]
+      NODE_ENV: production
+      PORT: "3000"
+      SERVICE_VERSION: v1
+      TRACKING_TABLE_NAME: buyer-visible-order-state
+      BUYER_ORDERS_INDEX_NAME: buyer_id-order_id-index
+      INPUT_SQS_QUEUE_URL: http://ministack:4566/000000000000/buyer-tracking-events
+      SQS_QUEUE_URL: http://ministack:4566/000000000000/customer-experience-events
+      TRACKING_CONSUMER_ENABLED: "true"
+      TRACKING_CONSUMER_DELAY_MS: "0"
+      WORKER_CONCURRENCY: "1"
+      READY_CHECK_TIMEOUT_MS: "500"
+    ports:
+      - name: tracking-http
+        target: 3000
+        published: "${BUYER_ORDER_TRACKING_PORT:-3040}"
+        protocol: tcp
+        app_protocol: http
+    healthcheck: *node-healthcheck
+
   receipt-worker:
     image: receipt-worker:local
     build:
@@ -386,6 +443,8 @@ services:
       fulfillment-planning:
         condition: service_healthy
       shipment-preparation:
+        condition: service_healthy
+      buyer-order-tracking:
         condition: service_healthy
     configs:
       - source: prometheus-config
@@ -428,3 +487,7 @@ configs:
           static_configs:
             - targets:
                 - shipment-preparation:3000
+        - job_name: buyer-order-tracking
+          static_configs:
+            - targets:
+                - buyer-order-tracking:3000

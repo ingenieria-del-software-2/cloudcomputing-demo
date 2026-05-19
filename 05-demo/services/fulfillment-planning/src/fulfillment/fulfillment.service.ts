@@ -447,6 +447,7 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     const event = this.outcomeEvent(result.commitment, command.event);
     await this.publish(event, version);
+    await this.publishTrackingCopy(event, version);
 
     const metricStatus = metricStatusFor(result.commitment.status);
     this.metrics.recordFulfillment(metricStatus, version);
@@ -629,6 +630,49 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
         error_message: error instanceof Error ? error.message : 'unknown error',
       });
       throw new FulfillmentEventPublishError(error);
+    }
+  }
+
+  private async publishTrackingCopy(
+    event: EventEnvelope<Record<string, unknown>>,
+    version: string,
+  ): Promise<void> {
+    const queueUrl = this.trackingQueueUrl();
+
+    if (!queueUrl) {
+      return;
+    }
+
+    try {
+      await this.client().send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: JSON.stringify(event),
+        }),
+      );
+      this.metrics.recordSqsPublish(
+        'success',
+        version,
+        this.trackingQueueName(),
+      );
+    } catch (error) {
+      this.metrics.recordSqsPublish(
+        'failure',
+        version,
+        this.trackingQueueName(),
+      );
+      this.logger.error('fulfillment_tracking_event_publish_failed', {
+        event_id: event.event_id,
+        event_name: event.event_name,
+        correlation_id: event.correlation_id,
+        order_id: stringValue(event.payload.order_id),
+        fulfillment_commitment_id: stringValue(
+          event.payload.fulfillment_commitment_id,
+        ),
+        business_error_code: 'FULFILLMENT_TRACKING_QUEUE_FAILED',
+        result: 'FULFILLMENT_TRACKING_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
     }
   }
 
@@ -857,6 +901,14 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private trackingQueueUrl(): string | undefined {
+    return this.config.get<string>('TRACKING_SQS_QUEUE_URL');
+  }
+
+  private trackingQueueName(): string {
+    return this.trackingQueueUrl()?.split('/').pop() ?? 'buyer-tracking-events';
+  }
+
   private endpoint(): string | undefined {
     const endpoint =
       this.config.get<string>('SQS_ENDPOINT') ??
@@ -866,9 +918,11 @@ export class FulfillmentService implements OnModuleInit, OnModuleDestroy {
       return endpoint;
     }
 
-    return [this.inputQueueUrl(), this.outputQueueUrl()].some((queueUrl) =>
-      queueUrl.startsWith('http://localhost:4566'),
-    )
+    return [
+      this.inputQueueUrl(),
+      this.outputQueueUrl(),
+      this.trackingQueueUrl(),
+    ].some((queueUrl) => queueUrl?.startsWith('http://localhost:4566'))
       ? 'http://localhost:4566'
       : undefined;
   }

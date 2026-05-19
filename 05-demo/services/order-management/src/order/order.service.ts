@@ -178,6 +178,7 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
   ): Promise<OrderAcceptedResponse> {
     const event = this.orderConfirmedEvent(order, command);
     await this.publish(event, version);
+    await this.publishTrackingCopy(event, version);
     this.metrics.recordOrder('confirmed', version);
     this.logger.info('order_confirmed', {
       request_id: command.requestId,
@@ -407,6 +408,47 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async publishTrackingCopy(
+    event: EventEnvelope<Record<string, unknown>>,
+    version: string,
+  ): Promise<void> {
+    const queueUrl = this.trackingQueueUrl();
+
+    if (!queueUrl) {
+      return;
+    }
+
+    try {
+      await this.client().send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: JSON.stringify(event),
+        }),
+      );
+      this.metrics.recordSqsPublish(
+        'success',
+        version,
+        this.trackingQueueName(),
+      );
+    } catch (error) {
+      this.metrics.recordSqsPublish(
+        'failure',
+        version,
+        this.trackingQueueName(),
+      );
+      this.logger.error('order_tracking_event_publish_failed', {
+        event_id: event.event_id,
+        event_name: event.event_name,
+        correlation_id: event.correlation_id,
+        order_id: stringValue(event.payload.order_id),
+        payment_id: stringValue(event.payload.payment_id),
+        business_error_code: 'ORDER_TRACKING_QUEUE_FAILED',
+        result: 'ORDER_TRACKING_QUEUE_FAILED',
+        error_message: error instanceof Error ? error.message : 'unknown error',
+      });
+    }
+  }
+
   private async ensureSchema(): Promise<void> {
     await this.db().query(`
       CREATE TABLE IF NOT EXISTS orders (
@@ -475,6 +517,14 @@ export class OrderService implements OnModuleInit, OnModuleDestroy {
 
   private queueName(): string {
     return this.queueUrl().split('/').pop() ?? 'orders-confirmed-intake';
+  }
+
+  private trackingQueueUrl(): string | undefined {
+    return this.config.get<string>('TRACKING_SQS_QUEUE_URL');
+  }
+
+  private trackingQueueName(): string {
+    return this.trackingQueueUrl()?.split('/').pop() ?? 'buyer-tracking-events';
   }
 
   private endpoint(): string | undefined {

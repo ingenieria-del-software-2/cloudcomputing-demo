@@ -2,8 +2,8 @@
 	build build-ts build-ledger \
 	lint lint-ts lint-fix lint-go \
 	typecheck typecheck-ts \
-	test test-ts test-go test-integration test-e2e test-worker-e2e test-order-management-e2e test-fulfillment-planning-e2e test-shipment-preparation-e2e test-prometheus \
-	verify verify-transaction-api verify-receipt-worker verify-order-management verify-fulfillment-planning verify-shipment-preparation verify-ledger-service \
+	test test-ts test-go test-integration test-e2e test-worker-e2e test-order-management-e2e test-fulfillment-planning-e2e test-shipment-preparation-e2e test-buyer-order-tracking-e2e test-full-saga-e2e test-prometheus \
+	verify verify-transaction-api verify-receipt-worker verify-order-management verify-fulfillment-planning verify-shipment-preparation verify-buyer-order-tracking verify-ledger-service \
 	docker-build compose-up compose-app-up compose-deps-up compose-metrics-up compose-down compose-reset compose-logs
 
 # --- Global & Go Targets ---
@@ -53,11 +53,15 @@ $(addsuffix -fulfillment-planning, $(TS_TASKS)):
 $(addsuffix -shipment-preparation, $(TS_TASKS)):
 	$(PNPM) --dir $(SHIPMENT_PREPARATION_DIR) run $(subst -shipment-preparation,,$@)
 
+$(addsuffix -buyer-order-tracking, $(TS_TASKS)):
+	$(PNPM) --dir $(BUYER_ORDER_TRACKING_DIR) run $(subst -buyer-order-tracking,,$@)
+
 verify-transaction-api: lint-transaction-api typecheck-transaction-api test-transaction-api test-integration test-e2e build-transaction-api
 verify-receipt-worker: lint-receipt-worker typecheck-receipt-worker test-receipt-worker test-worker-e2e build-receipt-worker
 verify-order-management: lint-order-management typecheck-order-management test-order-management test-order-management-e2e build-order-management
 verify-fulfillment-planning: lint-fulfillment-planning typecheck-fulfillment-planning test-fulfillment-planning test-fulfillment-planning-e2e build-fulfillment-planning
 verify-shipment-preparation: lint-shipment-preparation typecheck-shipment-preparation test-shipment-preparation test-shipment-preparation-e2e build-shipment-preparation
+verify-buyer-order-tracking: lint-buyer-order-tracking typecheck-buyer-order-tracking test-buyer-order-tracking test-buyer-order-tracking-e2e test-full-saga-e2e build-buyer-order-tracking
 
 # --- Test Environment Macros ---
 define run_test
@@ -103,6 +107,17 @@ define run_shipment_test
 	S3_UPLOAD_MAX_ATTEMPTS=2 S3_UPLOAD_RETRY_DELAY_MS=0 SELLER_CUTOFF_EXPIRED=false WORKER_CONCURRENCY=1 $(1)
 endef
 
+define run_tracking_test
+	@set -euo pipefail; \
+	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
+	$(COMPOSE) up -d ministack; \
+	$(COMPOSE) run --rm buyer-tracking-queue; \
+	$(COMPOSE) run --rm customer-experience-queue; \
+	AWS_REGION=us-east-1 AWS_ENDPOINT_URL=$(MINISTACK_ENDPOINT) AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+	TRACKING_TABLE_NAME=$(TRACKING_TABLE_NAME) INPUT_SQS_QUEUE_URL=$(BUYER_TRACKING_QUEUE_URL) SQS_QUEUE_URL=$(CUSTOMER_EXPERIENCE_QUEUE_URL) \
+	TRACKING_CONSUMER_ENABLED=true TRACKING_CONSUMER_DELAY_MS=0 WORKER_CONCURRENCY=1 $(1)
+endef
+
 test-integration:
 	$(call run_test, $(PNPM) --dir $(TRANSACTION_API_DIR) run test:integration)
 
@@ -120,6 +135,16 @@ test-fulfillment-planning-e2e:
 
 test-shipment-preparation-e2e:
 	$(call run_shipment_test, $(PNPM) --dir $(SHIPMENT_PREPARATION_DIR) run test:e2e)
+
+test-buyer-order-tracking-e2e:
+	$(call run_tracking_test, $(PNPM) --dir $(BUYER_ORDER_TRACKING_DIR) run test:e2e)
+
+test-full-saga-e2e:
+	@set -euo pipefail; \
+	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
+	PROMESA_EXPRESS_ERROR_RATE=0 PROMESA_EXPRESS_LATENCY_MS=0 $(COMPOSE) up -d --wait --build order-management fulfillment-planning shipment-preparation buyer-order-tracking; \
+	ORDER_MANAGEMENT_URL=$(ORDER_MANAGEMENT_URL) BUYER_ORDER_TRACKING_URL=$(BUYER_ORDER_TRACKING_URL) \
+	$(PNPM) --dir $(BUYER_ORDER_TRACKING_DIR) run test:full-saga
 
 test-prometheus:
 	@set -euo pipefail; \
@@ -146,10 +171,10 @@ test-prometheus:
 docker-build-%:
 	$(DOCKER) build -f build/docker/$*.Dockerfile -t $*:local .
 
-docker-build: docker-build-transaction-api docker-build-receipt-worker docker-build-order-management docker-build-fulfillment-planning docker-build-shipment-preparation docker-build-ledger-service
+docker-build: docker-build-transaction-api docker-build-receipt-worker docker-build-order-management docker-build-fulfillment-planning docker-build-shipment-preparation docker-build-buyer-order-tracking docker-build-ledger-service
 
 compose-app-up:
-	$(COMPOSE) up -d --build transaction-api receipt-worker order-management fulfillment-planning shipment-preparation
+	$(COMPOSE) up -d --build transaction-api receipt-worker order-management fulfillment-planning shipment-preparation buyer-order-tracking
 
 compose-deps-up compose-up:
 	$(COMPOSE) up -d ministack ledger-service
@@ -157,6 +182,7 @@ compose-deps-up compose-up:
 	$(COMPOSE) run --rm orders-confirmed-queue
 	$(COMPOSE) run --rm fulfillment-commitment-queue
 	$(COMPOSE) run --rm buyer-tracking-queue
+	$(COMPOSE) run --rm customer-experience-queue
 	$(COMPOSE) run --rm shipment-documents-bucket
 	$(COMPOSE) run --rm ledger-ready
 
