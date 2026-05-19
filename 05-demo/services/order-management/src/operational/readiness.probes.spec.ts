@@ -1,7 +1,9 @@
 import { SQSClient } from '@aws-sdk/client-sqs';
 import { ConfigService } from '@nestjs/config';
+import { Pool } from 'pg';
 import {
   HttpLedgerReadinessProbe,
+  PostgresReadinessProbe,
   SqsReadinessProbe,
 } from './readiness.probes';
 
@@ -45,6 +47,35 @@ describe('HttpLedgerReadinessProbe', () => {
   ): jest.SpiedFunction<typeof fetch> {
     return jest.spyOn(globalThis, 'fetch').mockResolvedValue(response);
   }
+});
+
+describe('PostgresReadinessProbe', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('returns ready when Postgres responds to SELECT 1', async () => {
+    const query = jest
+      .spyOn(Pool.prototype, 'query')
+      .mockResolvedValueOnce({ rows: [] } as never);
+    jest.spyOn(Pool.prototype, 'end').mockResolvedValueOnce(undefined as never);
+
+    await expect(
+      new PostgresReadinessProbe(new ConfigService()).isReady(),
+    ).resolves.toBe(true);
+    expect(query).toHaveBeenCalledWith('SELECT 1');
+  });
+
+  it('returns not ready when Postgres query fails', async () => {
+    jest
+      .spyOn(Pool.prototype, 'query')
+      .mockRejectedValueOnce(new Error('db unavailable') as never);
+    jest.spyOn(Pool.prototype, 'end').mockResolvedValueOnce(undefined as never);
+
+    await expect(
+      new PostgresReadinessProbe(new ConfigService()).isReady(),
+    ).resolves.toBe(false);
+  });
 });
 
 describe('SqsReadinessProbe', () => {

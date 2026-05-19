@@ -32,6 +32,7 @@ GET /metrics
 PORT=3000
 SERVICE_VERSION=v1
 GIT_COMMIT=local
+DATABASE_URL=postgresql://order:order@localhost:15432/order_management
 AWS_REGION=us-east-1
 AWS_ENDPOINT_URL=http://localhost:4566
 AWS_ACCESS_KEY_ID=test

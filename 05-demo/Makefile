@@ -31,6 +31,7 @@ LEDGER_BASE_URL ?= http://127.0.0.1:3001
 MINISTACK_ENDPOINT ?= http://localhost:4566
 SQS_QUEUE_URL ?= http://localhost:4566/000000000000/receipt-commands
 ORDERS_CONFIRMED_QUEUE_URL ?= http://localhost:4566/000000000000/orders-confirmed-intake
+ORDER_DATABASE_URL ?= postgresql://order:order@localhost:15432/order_management
 TRANSACTION_API_URL ?= http://localhost:3000
 ORDER_MANAGEMENT_URL ?= http://localhost:3010
 PROMETHEUS_URL ?= http://localhost:19090

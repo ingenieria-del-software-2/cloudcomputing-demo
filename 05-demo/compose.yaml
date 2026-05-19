@@ -75,8 +75,34 @@ services:
       - >-
         curl -fsS -X POST http://ministack:4566/
         -H 'Content-Type: application/x-www-form-urlencoded'
+        --data 'Action=CreateQueue&QueueName=orders-confirmed-dlq&Version=2012-11-05'
+        >/dev/null;
+        curl -fsS -X POST http://ministack:4566/
+        -H 'Content-Type: application/x-www-form-urlencoded'
         --data 'Action=CreateQueue&QueueName=orders-confirmed-intake&Version=2012-11-05'
+        --data 'Attribute.1.Name=RedrivePolicy'
+        --data-urlencode 'Attribute.1.Value={"deadLetterTargetArn":"arn:aws:sqs:us-east-1:000000000000:orders-confirmed-dlq","maxReceiveCount":"3"}'
         >/dev/null
+
+  order-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: order_management
+      POSTGRES_USER: order
+      POSTGRES_PASSWORD: order
+    ports:
+      - name: order-postgres
+        target: 5432
+        published: "${ORDER_POSTGRES_PORT:-15432}"
+        protocol: tcp
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U order -d order_management
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   ledger-service:
     image: ledger-service:local
@@ -143,11 +169,14 @@ services:
     depends_on:
       orders-confirmed-queue:
         condition: service_completed_successfully
+      order-postgres:
+        condition: service_healthy
     environment:
       <<: [*aws-local, *service-meta]
       NODE_ENV: production
       PORT: "3000"
       SERVICE_VERSION: v1
+      DATABASE_URL: postgresql://order:order@order-postgres:5432/order_management
       SQS_QUEUE_URL: http://ministack:4566/000000000000/orders-confirmed-intake
       IDEMPOTENCY_ENABLED: "true"
       READY_CHECK_TIMEOUT_MS: "500"

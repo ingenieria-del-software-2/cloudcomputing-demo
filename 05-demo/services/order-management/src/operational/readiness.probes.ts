@@ -1,8 +1,10 @@
 import { GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Pool } from 'pg';
 
 export const LEDGER_READINESS_PROBE = Symbol('LEDGER_READINESS_PROBE');
+export const DB_READINESS_PROBE = Symbol('DB_READINESS_PROBE');
 export const SQS_READINESS_PROBE = Symbol('SQS_READINESS_PROBE');
 
 export interface ReadinessProbe {
@@ -50,6 +52,31 @@ export class HttpLedgerReadinessProbe implements ReadinessProbe {
     }
 
     return value;
+  }
+}
+
+@Injectable()
+export class PostgresReadinessProbe implements ReadinessProbe {
+  constructor(private readonly config: ConfigService) {}
+
+  async isReady(): Promise<boolean> {
+    const pool = new Pool({ connectionString: this.databaseUrl() });
+
+    try {
+      await pool.query('SELECT 1');
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await pool.end().catch(() => undefined);
+    }
+  }
+
+  private databaseUrl(): string {
+    return this.config.get<string>(
+      'DATABASE_URL',
+      'postgresql://order:order@localhost:15432/order_management',
+    );
   }
 }
 

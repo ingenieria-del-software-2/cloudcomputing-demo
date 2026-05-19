@@ -45,6 +45,14 @@ describe('MetricsService', () => {
     );
   });
 
+  it('records duplicate order attempts using the PDR metric name', async () => {
+    service.recordDuplicateOrderAttempt('v1');
+
+    await expect(service.render()).resolves.toContain(
+      'duplicate_order_attempts_total{service="order-management",version="v1"} 1',
+    );
+  });
+
   it('records HTTP request duration buckets', async () => {
     service.recordHttpRequest({
       route: '/transactions',

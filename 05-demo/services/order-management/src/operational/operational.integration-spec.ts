@@ -6,6 +6,8 @@ import {
 import { ConfigModule } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { OperationalModule } from './operational.module';
+import { DB_READINESS_PROBE } from './readiness.probes';
+import type { ReadinessProbe } from './readiness.probes';
 import { ReadinessService } from './readiness.service';
 
 describe('OperationalModule integration', () => {
@@ -49,6 +51,7 @@ describe('OperationalModule integration', () => {
     await expect(service.check()).resolves.toEqual({
       status: 'ready',
       dependencies: {
+        db: 'ready',
         sqs: 'ready',
       },
     });
@@ -61,6 +64,7 @@ describe('OperationalModule integration', () => {
     await expect(service.check()).resolves.toEqual({
       status: 'not_ready',
       dependencies: {
+        db: 'ready',
         sqs: 'not_ready',
       },
     });
@@ -75,10 +79,19 @@ describe('OperationalModule integration', () => {
         }),
         OperationalModule,
       ],
-    }).compile();
+    })
+      .overrideProvider(DB_READINESS_PROBE)
+      .useValue(readyProbe())
+      .compile();
     service = moduleRef.get(ReadinessService);
   }
 });
+
+function readyProbe(): ReadinessProbe {
+  return {
+    isReady: () => Promise.resolve(true),
+  };
+}
 
 function createSqsClient(): SQSClient {
   return new SQSClient({

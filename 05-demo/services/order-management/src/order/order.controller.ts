@@ -34,8 +34,8 @@ export class OrderController {
   }
 
   @Get('/orders/:order_id')
-  getOrder(@Param('order_id') orderId: string) {
-    const order = this.orders.findByOrderId(orderId);
+  async getOrder(@Param('order_id') orderId: string) {
+    const order = await this.orders.findByOrderId(orderId);
 
     if (!order) {
       throw new NotFoundException({

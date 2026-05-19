@@ -65,10 +65,10 @@ endef
 define run_order_test
 	@set -euo pipefail; \
 	trap '$(COMPOSE) --profile metrics down --remove-orphans -v' EXIT; \
-	$(COMPOSE) up -d ministack; \
+	$(COMPOSE) up -d --wait ministack order-postgres; \
 	$(COMPOSE) run --rm orders-confirmed-queue; \
 	AWS_REGION=us-east-1 AWS_ENDPOINT_URL=$(MINISTACK_ENDPOINT) AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-	SQS_QUEUE_URL=$(ORDERS_CONFIRMED_QUEUE_URL) $(1)
+	DATABASE_URL=$(ORDER_DATABASE_URL) SQS_QUEUE_URL=$(ORDERS_CONFIRMED_QUEUE_URL) $(1)
 endef
 
 test-integration:

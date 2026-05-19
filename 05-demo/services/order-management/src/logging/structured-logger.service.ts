@@ -15,6 +15,10 @@ export interface LogFields {
   correlation_id?: string;
   order_id?: string;
   payment_id?: string;
+  status_before?: string;
+  status_after?: string;
+  business_error_code?: string;
+  result?: string;
   queue?: string;
   producer_version?: string;
   idempotency_key_hash?: string;
@@ -23,6 +27,7 @@ export interface LogFields {
   status?: number;
   detail?: string;
   error_message?: string;
+  db?: string;
   ledger_service?: string;
   sqs?: string;
 }

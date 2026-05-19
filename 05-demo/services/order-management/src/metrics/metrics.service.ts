@@ -11,6 +11,7 @@ import {
 type OrderStatus =
   | 'confirmed'
   | 'duplicate_payment_ignored'
+  | 'confirmation_failed'
   | 'accepted'
   | 'replayed'
   | 'invalid'
@@ -28,6 +29,7 @@ export class MetricsService {
   private readonly httpRequests: Counter<string>;
   private readonly httpDuration: Histogram<string>;
   private readonly orders: Counter<string>;
+  private readonly duplicateOrderAttempts: Counter<string>;
   private readonly ledgerRequests: Counter<string>;
   private readonly sqsPublish: Counter<string>;
   private readonly buildInfo: Gauge<string>;
@@ -57,6 +59,12 @@ export class MetricsService {
       name: 'orders_total',
       help: 'Total order-management outcomes',
       labelNames: ['service', 'status', 'version'],
+      registers: [this.registry],
+    });
+    this.duplicateOrderAttempts = new Counter({
+      name: 'duplicate_order_attempts_total',
+      help: 'Total duplicate payment attempts ignored by order-management',
+      labelNames: ['service', 'version'],
       registers: [this.registry],
     });
     this.ledgerRequests = new Counter({
@@ -99,6 +107,10 @@ export class MetricsService {
 
   recordOrder(status: OrderStatus, version: string): void {
     this.orders.inc({ service: this.serviceName, status, version });
+  }
+
+  recordDuplicateOrderAttempt(version: string): void {
+    this.duplicateOrderAttempts.inc({ service: this.serviceName, version });
   }
 
   recordTransaction(status: OrderStatus, version: string): void {

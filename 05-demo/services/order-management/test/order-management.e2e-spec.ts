@@ -1,15 +1,21 @@
 import {
   CreateQueueCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   ReceiveMessageCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { Pool } from 'pg';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/common/configure-app';
+import { StructuredLoggerService } from '../src/logging/structured-logger.service';
+import { MetricsService } from '../src/metrics/metrics.service';
+import { OrderService } from '../src/order/order.service';
 
 type OrderResponse = {
   order_id: string;
@@ -30,11 +36,16 @@ type EventEnvelope = {
 };
 
 const queueUrl = 'http://localhost:4566/000000000000/orders-confirmed-intake';
+const dlqArn = 'arn:aws:sqs:us-east-1:000000000000:orders-confirmed-dlq';
+const databaseUrl =
+  process.env.DATABASE_URL ??
+  'postgresql://order:order@localhost:15432/order_management';
 
 describe('order-management ATDD', () => {
   let app: INestApplication<App>;
   let originalEnv: NodeJS.ProcessEnv;
   let sqs: SQSClient;
+  let db: Pool;
 
   const http = () => request(app.getHttpServer());
 
@@ -47,6 +58,7 @@ describe('order-management ATDD', () => {
       AWS_REGION: 'us-east-1',
       AWS_SECRET_ACCESS_KEY: 'test',
       GIT_COMMIT: 'e2e',
+      DATABASE_URL: databaseUrl,
       IDEMPOTENCY_ENABLED: 'true',
       SERVICE_VERSION: 'v1',
       SQS_QUEUE_URL: queueUrl,
@@ -61,8 +73,20 @@ describe('order-management ATDD', () => {
         secretAccessKey: 'test',
       },
     });
+    db = new Pool({ connectionString: databaseUrl });
     await sqs.send(
-      new CreateQueueCommand({ QueueName: 'orders-confirmed-intake' }),
+      new CreateQueueCommand({ QueueName: 'orders-confirmed-dlq' }),
+    );
+    await sqs.send(
+      new CreateQueueCommand({
+        QueueName: 'orders-confirmed-intake',
+        Attributes: {
+          RedrivePolicy: JSON.stringify({
+            deadLetterTargetArn: dlqArn,
+            maxReceiveCount: '3',
+          }),
+        },
+      }),
     );
 
     app = await NestFactory.create(AppModule, { logger: false });
@@ -72,28 +96,42 @@ describe('order-management ATDD', () => {
 
   afterAll(async () => {
     await app?.close();
+    await db?.end();
     sqs?.destroy();
     process.env = originalEnv;
   }, 60000);
 
   it('exposes operational HTTP endpoints', async () => {
-    await Promise.all([
-      http().get('/health').expect(200, { status: 'ok' }),
-      http().get('/healthz').expect(200, { status: 'ok' }),
-      http()
-        .get('/readyz')
-        .expect(200, {
-          status: 'ready',
-          dependencies: {
-            sqs: 'ready',
-          },
-        }),
-      http().get('/version').expect(200, {
-        service: 'order-management',
-        version: 'v1',
-        commit: 'e2e',
+    await http().get('/health').expect(200, { status: 'ok' });
+    await http().get('/healthz').expect(200, { status: 'ok' });
+    await http()
+      .get('/readyz')
+      .expect(200, {
+        status: 'ready',
+        dependencies: {
+          db: 'ready',
+          sqs: 'ready',
+        },
+      });
+    await http().get('/version').expect(200, {
+      service: 'order-management',
+      version: 'v1',
+      commit: 'e2e',
+    });
+  });
+
+  it('configures a DLQ redrive policy for orders-confirmed-intake', async () => {
+    const response = await sqs.send(
+      new GetQueueAttributesCommand({
+        QueueUrl: queueUrl,
+        AttributeNames: ['RedrivePolicy'],
       }),
-    ]);
+    );
+
+    expect(JSON.parse(response.Attributes?.RedrivePolicy ?? '{}')).toEqual({
+      deadLetterTargetArn: dlqArn,
+      maxReceiveCount: '3',
+    });
   });
 
   it('creates an order from an approved payment and publishes order_confirmed', async () => {
@@ -119,6 +157,8 @@ describe('order-management ATDD', () => {
           status: 'ORDER_CONFIRMED',
         });
       });
+
+    await expect(dbOrderPaymentId(order.order_id)).resolves.toBe(paymentId);
 
     const event = await receiveEvent(
       'orders.order_confirmed.v1',
@@ -162,6 +202,53 @@ describe('order-management ATDD', () => {
       'orders.duplicate_payment_ignored.v1',
       (first.body as OrderResponse).order_id,
     );
+
+    const metrics = await http().get('/metrics').expect(200);
+    expect(metrics.text).toContain(
+      'duplicate_order_attempts_total{service="order-management",version="v1"} 1',
+    );
+  });
+
+  it('publishes order_confirmation_failed when persistence fails', async () => {
+    const paymentId = `pay_failure_${Date.now()}`;
+    const config = new ConfigService({
+      AWS_ACCESS_KEY_ID: 'test',
+      AWS_ENDPOINT_URL: 'http://localhost:4566',
+      AWS_REGION: 'us-east-1',
+      AWS_SECRET_ACCESS_KEY: 'test',
+      DATABASE_URL: 'postgresql://order:order@127.0.0.1:1/order_management',
+      SERVICE_VERSION: 'v1',
+      SQS_QUEUE_URL: queueUrl,
+    });
+    const failingService = new OrderService(
+      config,
+      new MetricsService(config),
+      loggerMock(),
+    );
+
+    await expect(
+      failingService.approvePayment({
+        body: paymentPayload(paymentId, 'cart_failure_001'),
+        correlationId: 'checkout_failure_001',
+        requestId: `req_${paymentId}`,
+      }),
+    ).rejects.toHaveProperty('response.code', 'ORDER_CONFIRMATION_FAILED');
+    await failingService.onModuleDestroy();
+
+    const event = await receiveEventByPayment(
+      'orders.order_confirmation_failed.v1',
+      paymentId,
+    );
+    expect(event).toMatchObject({
+      event_name: 'orders.order_confirmation_failed.v1',
+      producer: 'order-management',
+      correlation_id: 'checkout_failure_001',
+      idempotency_key: `payment_id:${paymentId}`,
+    });
+    expect(event.payload).toMatchObject({
+      payment_id: paymentId,
+      business_error_code: 'ORDER_PERSISTENCE_FAILED',
+    });
   });
 
   function postPayment(paymentId: string, cartId: string) {
@@ -171,23 +258,7 @@ describe('order-management ATDD', () => {
         'x-correlation-id': 'checkout_e2e_001',
         'x-request-id': `req_${paymentId}`,
       })
-      .send({
-        payment_id: paymentId,
-        cart_id: cartId,
-        buyer_id: 'buyer_918273',
-        seller_id: 'seller_445566',
-        site_id: 'MLA',
-        currency: 'ARS',
-        gross_amount: 52999.99,
-        items: [
-          {
-            item_id: 'CFB123456',
-            seller_sku: 'MATE-STANLEY-NO-OFICIAL',
-            quantity: 1,
-            unit_price: 52999.99,
-          },
-        ],
-      });
+      .send(paymentPayload(paymentId, cartId));
   }
 
   async function receiveEvent(
@@ -230,4 +301,83 @@ describe('order-management ATDD', () => {
 
     throw new Error(`${eventName} not found for ${orderId}`);
   }
+
+  async function receiveEventByPayment(
+    eventName: string,
+    paymentId: string,
+  ): Promise<EventEnvelope> {
+    const deadline = Date.now() + 5000;
+
+    while (Date.now() < deadline) {
+      const response = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrl,
+          MaxNumberOfMessages: 10,
+          WaitTimeSeconds: 1,
+        }),
+      );
+
+      for (const message of response.Messages ?? []) {
+        const event = message.Body
+          ? (JSON.parse(message.Body) as EventEnvelope)
+          : undefined;
+
+        if (message.ReceiptHandle) {
+          await sqs.send(
+            new DeleteMessageCommand({
+              QueueUrl: queueUrl,
+              ReceiptHandle: message.ReceiptHandle,
+            }),
+          );
+        }
+
+        if (
+          event?.event_name === eventName &&
+          event.payload.payment_id === paymentId
+        ) {
+          return event;
+        }
+      }
+    }
+
+    throw new Error(`${eventName} not found for ${paymentId}`);
+  }
+
+  async function dbOrderPaymentId(
+    orderId: string,
+  ): Promise<string | undefined> {
+    const result = await db.query<{ payment_id: string }>(
+      'SELECT payment_id FROM orders WHERE order_id = $1',
+      [orderId],
+    );
+
+    return result.rows[0]?.payment_id;
+  }
 });
+
+function paymentPayload(paymentId: string, cartId: string) {
+  return {
+    payment_id: paymentId,
+    cart_id: cartId,
+    buyer_id: 'buyer_918273',
+    seller_id: 'seller_445566',
+    site_id: 'MLA',
+    currency: 'ARS',
+    gross_amount: 52999.99,
+    items: [
+      {
+        item_id: 'CFB123456',
+        seller_sku: 'MATE-STANLEY-NO-OFICIAL',
+        quantity: 1,
+        unit_price: 52999.99,
+      },
+    ],
+  };
+}
+
+function loggerMock(): jest.Mocked<StructuredLoggerService> {
+  return {
+    info: jest.fn(),
+    error: jest.fn(),
+  } as unknown as jest.Mocked<StructuredLoggerService>;
+}
