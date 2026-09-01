@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+.bin/
+.env
+.env.*
+!.env.example
