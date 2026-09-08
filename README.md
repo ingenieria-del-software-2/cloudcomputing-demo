@@ -64,7 +64,7 @@ Aprenderás a desplegar y acceder a una máquina virtual en la nube AWS.
 
 ### 🚀 Lanzar Instancia EC2  
 
-- Selecciona instancia tipo `t2.micro` con Ubuntu Linux.
+- Selecciona instancia tipo `t3.micro` con Ubuntu Linux.
 - Usa la clave y Security Group creados anteriormente.
 
 ### 🔌 Conexión SSH a EC2  

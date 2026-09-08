@@ -31,14 +31,14 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
-  RouteTableWeb: 
+  RouteTableWeb:
     Type: 'AWS::EC2::RouteTable'
     Properties:
       VpcId: !Ref VPC
       Tags:
       - Key: Name
         Value: FIUBA-vpc1-rt-web
-  RouteTableWebDefaultIPv4: 
+  RouteTableWebDefaultIPv4:
     Type: 'AWS::EC2::Route'
     DependsOn: InternetGatewayAttachment
     Properties:
@@ -47,7 +47,7 @@ Resources:
       DestinationCidrBlock: '0.0.0.0/0'
       GatewayId:
         Ref: InternetGateway
-  RouteTableWebDefaultIPv6: 
+  RouteTableWebDefaultIPv6:
     Type: 'AWS::EC2::Route'
     DependsOn: InternetGatewayAttachment
     Properties:
@@ -82,7 +82,7 @@ Resources:
       AvailabilityZone: !Select [ 0, !GetAZs '' ]
       CidrBlock: 10.16.0.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '00::/64'
@@ -98,7 +98,7 @@ Resources:
       AvailabilityZone: !Select [ 1, !GetAZs '' ]
       CidrBlock: 10.16.64.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '04::/64'
@@ -114,7 +114,7 @@ Resources:
       AvailabilityZone: !Select [ 2, !GetAZs '' ]
       CidrBlock: 10.16.128.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '08::/64'
@@ -130,7 +130,7 @@ Resources:
       AvailabilityZone: !Select [ 0, !GetAZs '' ]
       CidrBlock: 10.16.16.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '01::/64'
@@ -146,7 +146,7 @@ Resources:
       AvailabilityZone: !Select [ 1, !GetAZs '' ]
       CidrBlock: 10.16.80.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '05::/64'
@@ -162,7 +162,7 @@ Resources:
       AvailabilityZone: !Select [ 2, !GetAZs '' ]
       CidrBlock: 10.16.144.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '09::/64'
@@ -178,7 +178,7 @@ Resources:
       AvailabilityZone: !Select [ 0, !GetAZs '' ]
       CidrBlock: 10.16.32.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '02::/64'
@@ -194,7 +194,7 @@ Resources:
       AvailabilityZone: !Select [ 1, !GetAZs '' ]
       CidrBlock: 10.16.96.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '06::/64'
@@ -210,7 +210,7 @@ Resources:
       AvailabilityZone: !Select [ 2, !GetAZs '' ]
       CidrBlock: 10.16.160.0/20
       AssignIpv6AddressOnCreation: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '0A::/64'
@@ -226,7 +226,7 @@ Resources:
       AvailabilityZone: !Select [ 0, !GetAZs '' ]
       CidrBlock: 10.16.48.0/20
       MapPublicIpOnLaunch: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '03::/64'
@@ -242,7 +242,7 @@ Resources:
       AvailabilityZone: !Select [ 1, !GetAZs '' ]
       CidrBlock: 10.16.112.0/20
       MapPublicIpOnLaunch: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '07::/64'
@@ -258,7 +258,7 @@ Resources:
       AvailabilityZone: !Select [ 2, !GetAZs '' ]
       CidrBlock: 10.16.176.0/20
       MapPublicIpOnLaunch: true
-      Ipv6CidrBlock: 
+      Ipv6CidrBlock:
         Fn::Sub:
           - "${VpcPart}${SubnetPart}"
           - SubnetPart: '0B::/64'
@@ -342,16 +342,16 @@ Resources:
       Timeout: 30
   FIUBAINTERNALTEST:
     Type: AWS::EC2::Instance
-    DependsOn: 
+    DependsOn:
     - ssminterfaceendpoint
     - ssmec2messagesinterfaceendpoint
     - ssmmessagesinterfaceendpoint
     Properties:
-      InstanceType: "t2.micro"
+      InstanceType: "t3.micro"
       ImageId: !Ref LatestAmiId
       IamInstanceProfile: !Ref SessionManagerInstanceProfile
       SubnetId: !Ref SubnetAPPA
-      SecurityGroupIds: 
+      SecurityGroupIds:
         - !Ref InstanceSecurityGroup
       Tags:
         - Key: Name
@@ -397,7 +397,7 @@ Resources:
             Version: 2012-10-17
             Statement:
               - Effect: Allow
-                Action: 
+                Action:
                   - 'ssm:DescribeAssociation'
                   - 'ssm:GetDeployablePatchSnapshotForInstance'
                   - 'ssm:GetDocument'
@@ -419,10 +419,10 @@ Resources:
                   - 'ssmmessages:CreateControlChannel'
                   - 'ssmmessages:CreateDataChannel'
                   - 'ssmmessages:OpenControlChannel'
-                  - 'ssmmessages:OpenDataChannel' 
+                  - 'ssmmessages:OpenDataChannel'
                 Resource: '*'
               - Effect: Allow
-                Action: 
+                Action:
                   - 'ec2messages:AcknowledgeMessage'
                   - 'ec2messages:DeleteMessage'
                   - 'ec2messages:FailMessage'
